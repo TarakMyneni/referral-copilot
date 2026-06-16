@@ -12,7 +12,7 @@ import pandas as pd
 
 from src.config import COLUMNS
 from src.geo import resolve_location, build_postcode_centroids
-from src.ranking import parse_combined_query
+from src.ranking import parse_combined_query, _LLM_MODEL
 from src.evidence import evaluate_evidence, trust_label
 from src import agent as supervisor
 from src import feedback as feedback_store
@@ -550,6 +550,119 @@ def _make_qr_svg(text, scale=3):
         )
 
 
+# ---------------------------------------------------------------------------
+# Conversational AI chat
+# ---------------------------------------------------------------------------
+
+_CHAT_SYSTEM = """\
+You are Suvidha, a friendly Indian healthcare referral assistant helping people find the right hospital.
+
+Decision logic:
+1. If you have BOTH a specific Indian location (city / town / 6-digit PIN) AND a specific care need
+   (condition, specialty, procedure), respond with ONLY this JSON — nothing else:
+   {"action":"search","care_need":"<english care need>","location":"<english city>","org_type":"<government|private|>"}
+
+2. If the user wants to filter the currently shown results by ownership type, respond with ONLY:
+   {"action":"filter","org_type":"<government|private|all>"}
+
+3. Otherwise ask ONE short clarifying question (1-2 sentences). Be warm, concise, empathetic.
+   Always respond in English regardless of the user's language.
+
+org_type: "government" if user says govt/sarkari/public, "private" if private, "" otherwise.
+
+Examples:
+  "best hospitals near Pune"             → ask what kind of care they need
+  "I have chest pain"                    → ask which city/area they're near
+  "need dialysis somewhere"              → ask which city
+  "eye problem near Chennai"             → {"action":"search","care_need":"eye care","location":"Chennai","org_type":""}
+  "government hospitals for dialysis Jaipur" → {"action":"search","care_need":"dialysis","location":"Jaipur","org_type":"government"}
+  "show only government ones"            → {"action":"filter","org_type":"government"}
+"""
+
+
+def _llm_chat(user_msg, history):
+    """
+    Multi-turn LLM conversation. history is a list of (user, assistant) string pairs.
+    Returns (response, is_action).
+      is_action=True  → response is a parsed action dict
+      is_action=False → response is a plain conversational string
+      response=None   → LLM unavailable
+    """
+    import json as _json, os, requests as _req
+    try:
+        host  = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
+        token = os.environ.get("DATABRICKS_TOKEN", "")
+        if not host or not token:
+            return None, False
+
+        msgs = [{"role": "system", "content": _CHAT_SYSTEM}]
+        for u, a in history:
+            msgs.append({"role": "user",      "content": str(u)})
+            msgs.append({"role": "assistant", "content": str(a)})
+        msgs.append({"role": "user", "content": user_msg})
+
+        resp = _req.post(
+            f"{host}/serving-endpoints/{_LLM_MODEL}/invocations",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={"messages": msgs, "max_tokens": 150, "temperature": 0.3},
+            timeout=12,
+        )
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+        print(f"[Chat] '{user_msg[:60]}' → '{raw[:120]}'")
+
+        hit = re.search(r"\{[^{}]*\}", raw, re.DOTALL)
+        if hit:
+            try:
+                action = _json.loads(hit.group())
+                if "action" in action:
+                    return action, True
+            except Exception:
+                pass
+        return raw, False
+    except Exception as exc:
+        print(f"[Chat] LLM error: {exc}")
+        return None, False
+
+
+def _chat_thread_html(history):
+    """Render chat history as a styled bubble thread. Returns '' when empty."""
+    if not history:
+        return ""
+
+    bot_icon = (
+        f'<div style="width:22px;height:22px;border-radius:50%;background:{GRN_MID};'
+        f'display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:3px;">'
+        f'<svg width="11" height="11" viewBox="0 0 40 40" fill="white">'
+        f'<path d="M20 36s-14-10.5-14-20a14 14 0 0 1 28 0c0 9.5-14 20-14 20z"/>'
+        f'<circle cx="20" cy="16" r="5" fill="white"/></svg></div>'
+    )
+
+    msgs = []
+    for user_msg, ai_msg in history:
+        u_esc = str(user_msg).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        msgs.append(
+            f'<div style="display:flex;justify-content:flex-end;margin-bottom:7px;">'
+            f'<div style="background:{GRN_MID};color:#fff;border-radius:18px 18px 4px 18px;'
+            f'padding:8px 14px;max-width:78%;font-size:13px;line-height:1.45;">'
+            f'{u_esc}</div></div>'
+        )
+        if ai_msg:
+            msgs.append(
+                f'<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:7px;">'
+                f'{bot_icon}'
+                f'<div style="background:#F0F7FF;border:0.5px solid #B3D4F5;color:{TXT_PRI};'
+                f'border-radius:4px 18px 18px 18px;padding:8px 14px;max-width:82%;'
+                f'font-size:13px;line-height:1.5;">{ai_msg}</div></div>'
+            )
+
+    return (
+        f'<div style="padding:10px 20px 6px;background:{BG_PAGE};'
+        f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">'
+        + "".join(msgs) +
+        f'</div>'
+    )
+
+
 def _checklist_modal_html(facility, care_need):
     """Render the full visit-checklist modal (position:fixed overlay)."""
     items  = CARE_CHECKLISTS.get(care_need, _GENERAL_CHECKLIST)
@@ -788,8 +901,8 @@ def _topbar_html(query, radius, n_saved):
     <div style="flex:1;padding:6px 20px;height:100%;display:flex;flex-direction:column;
                 justify-content:center;border-right:0.5px solid {BORDER};">
       <div style="font-size:9px;font-weight:600;color:{TXT_MUT};text-transform:uppercase;
-                  letter-spacing:0.5px;line-height:1;">SEARCH</div>
-      <input id="vi-query" value="{query}" placeholder="e.g. dialysis near Jaipur"
+                  letter-spacing:0.5px;line-height:1;">ASK SUVIDHA</div>
+      <input id="vi-query" value="{query}" placeholder="e.g. I need dialysis near Jaipur…"
         onkeydown="if(event.key==='Enter'){{{_JS_SEARCH_INLINE}}}"
         style="border:none;outline:none;background:transparent;font-size:13px;
                color:{TXT_PRI};width:100%;padding:0;margin-top:2px;font-family:inherit;">
@@ -1455,7 +1568,10 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
 
     shortlist_panel = _shortlist_panel_html(shortlist)
     topbar       = _topbar_html(query, radius or 50, n_saved)
-    suggestions  = _suggestions_bar_html(query)
+    chat_history = (meta or {}).get("chat_history", [])
+    chat_thread  = _chat_thread_html(chat_history)
+    # Hide suggestion pills once the user has started a conversation
+    suggestions  = "" if chat_history else _suggestions_bar_html(query)
     filterbar    = _filterbar_html(filter_val, sort_val, len(results))
 
     responsive_css = f"""
@@ -1503,6 +1619,7 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
     min-height:85vh;">
   {topbar}
   {suggestions}
+  {chat_thread}
   {filterbar}
   <div class="sv-body">
     <div class="sv-results">{results_body}</div>
@@ -1604,50 +1721,21 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
 
     export_file = gr.File(label="Download shortlist", visible=False)
 
-    # ── Search ────────────────────────────────────────────────────────────
-    def _do_search(query, radius, shortlist, filter_val, sort_val):
-        try:
-            radius = int(float(radius or "50"))
-        except (ValueError, TypeError):
-            radius = 50
-        query = (query or "").strip()
-        if not _data_ready:
-            m = {"error": _STARTUP_ERROR or "Data still loading — please try again."}
-            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m, []),
-                    [], m, query, radius, [])
-        if not query:
-            m = {"error": "Enter something like 'dialysis near Jaipur'."}
-            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m, []),
-                    [], m, query, radius, [])
+    # ── Chat / Search ─────────────────────────────────────────────────────
+    # Every user message goes through the LLM first. The LLM either:
+    #   • asks a follow-up question  (conversational response)
+    #   • emits {"action":"search",...}  → runs search, shows results
+    #   • emits {"action":"filter",...}  → re-renders with new filter
+    # chat_history is stored inside meta["chat_history"] so all downstream
+    # handlers (filter, sort, bookmark) carry it through without changes.
 
-        care_need, location, org_type_hint = parse_combined_query(query, centroids)
-        if not location:
-            m = {"error": f"Couldn't find a location in '{query}'. Try 'dialysis near Jaipur'."}
-            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m, []),
-                    [], m, query, radius, [])
-
-        if not care_need:
-            # No specialty detected (e.g. "best hospitals near Pune") —
-            # resolve the location, show the map and follow-up prompt.
-            rlat, rlon, rname, rtype = resolve_location(location, centroids)
-            m = {
-                "resolved_location":   rname or location,
-                "location_match_type": rtype or "exact",
-                "care_need":           "",
-                "total_matches":       0,
-                "search_lat":          rlat,
-                "search_lon":          rlon,
-            }
-            html = _render_page([], shortlist, filter_val, sort_val, query, radius, m, [])
-            return html, [], m, query, radius, []
-
+    def _run_search(care_need, location, org_type_hint, radius, filter_val):
+        """Inner helper: run supervisor + auto-expand. Returns (results, meta, effective_filter, radius)."""
         results, meta = supervisor.run(
             df=df, centroids=centroids,
             care_need_query=care_need, location_query=location,
             radius_km=radius,
         )
-
-        # Auto-expand radius when no results found at the requested distance
         if not results:
             for bigger_r in [100, 200, 400]:
                 if bigger_r <= radius:
@@ -1661,22 +1749,116 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                     meta["expanded_from"] = radius
                     radius = bigger_r
                     break
-
-        # Use org_type extracted by the LLM; only overrides if the user
-        # hasn't explicitly clicked a filter chip.
         effective_filter = filter_val
         if filter_val == "All" and org_type_hint:
             if org_type_hint in ("government", "govt", "public", "sarkari"):
                 effective_filter = "Government"
             elif org_type_hint == "private":
                 effective_filter = "Private"
+        return results, meta, effective_filter, radius
 
-        html = _render_page(results, shortlist, effective_filter, sort_val, query, radius, meta, [])
-        return html, results, meta, query, radius, []
+    def _do_chat(query, radius, shortlist, filter_val, sort_val, cur_results, cur_meta, cur_compare):
+        try:
+            radius = int(float(radius or "50"))
+        except (ValueError, TypeError):
+            radius = 50
+        query = (query or "").strip()
+
+        # Retrieve chat history stored in current meta
+        chat_history = (cur_meta or {}).get("chat_history", [])
+
+        def _ret(results, meta, filt, q, r, compare):
+            """Attach chat_history to meta and render page."""
+            meta = dict(meta or {})
+            meta["chat_history"] = chat_history
+            html = _render_page(results, shortlist, filt, sort_val, q, r, meta, compare)
+            return html, results, meta, q, r, compare
+
+        if not query:
+            return _ret(cur_results or [], cur_meta or {}, filter_val,
+                        (cur_meta or {}).get("query", ""), radius, cur_compare or [])
+
+        if not _data_ready:
+            ai_msg = _STARTUP_ERROR or "Still loading hospital data — please wait a moment and try again."
+            chat_history = chat_history + [(query, ai_msg)]
+            m = dict(cur_meta or {})
+            m["chat_history"] = chat_history
+            html = _render_page(cur_results or [], shortlist, filter_val, sort_val, query, radius, m, [])
+            return html, cur_results or [], m, query, radius, []
+
+        # Ask the LLM
+        response, is_action = _llm_chat(query, chat_history)
+
+        # LLM unavailable — fall back to direct parse and run search
+        if response is None:
+            care_need, location, org_type_hint = parse_combined_query(query, centroids)
+            if care_need and location:
+                results, meta, eff_filt, radius = _run_search(care_need, location, org_type_hint, radius, filter_val)
+                n = meta.get("total_matches", len(results))
+                loc = meta.get("resolved_location", location)
+                ai_msg = (f"Found <b>{n}</b> {care_need.title()} facilities near <b>{loc.title()}</b>."
+                          if n else f"No {care_need} facilities found near {loc} within {radius} km.")
+                chat_history = chat_history + [(query, ai_msg)]
+                meta["chat_history"] = chat_history
+                search_q = f"{care_need} near {location}"
+                html = _render_page(results, shortlist, eff_filt, sort_val, search_q, radius, meta, [])
+                return html, results, meta, search_q, radius, []
+            ai_msg = "I'm having trouble connecting. Try a query like <b>dialysis near Jaipur</b>."
+            chat_history = chat_history + [(query, ai_msg)]
+            m = dict(cur_meta or {})
+            m["chat_history"] = chat_history
+            html = _render_page(cur_results or [], shortlist, filter_val, sort_val, query, radius, m, [])
+            return html, cur_results or [], m, query, radius, []
+
+        if is_action:
+            action = response
+            if action.get("action") == "search":
+                care_need     = (action.get("care_need",  "") or "").strip()
+                location      = (action.get("location",   "") or "").strip()
+                org_type_hint = (action.get("org_type",   "") or "").strip().lower()
+                if not care_need or not location:
+                    ai_msg = ("I need to know both the <b>type of care</b> and <b>city/area</b>. "
+                              "Could you share those?")
+                    chat_history = chat_history + [(query, ai_msg)]
+                    return _ret(cur_results or [], cur_meta or {}, filter_val, query, radius, cur_compare or [])
+
+                results, meta, eff_filt, radius = _run_search(care_need, location, org_type_hint, radius, filter_val)
+                n   = meta.get("total_matches", len(results))
+                loc = meta.get("resolved_location", location)
+                if n:
+                    ai_msg = (
+                        f"Found <b>{n}</b> {care_need.title()} facilities near <b>{loc.title()}</b>. "
+                        f"Use the filter chips to narrow by Government / Private, or tap ⊞ to compare."
+                    )
+                else:
+                    ai_msg = (
+                        f"No {care_need} facilities found near {loc} within {radius} km. "
+                        f"Try a broader area or different care need."
+                    )
+                chat_history = chat_history + [(query, ai_msg)]
+                meta["chat_history"] = chat_history
+                search_q = f"{care_need} near {location}"
+                html = _render_page(results, shortlist, eff_filt, sort_val, search_q, radius, meta, [])
+                return html, results, meta, search_q, radius, []
+
+            elif action.get("action") == "filter":
+                org = (action.get("org_type", "") or "").lower()
+                new_filter = ("Government" if org in ("government", "govt", "public", "sarkari")
+                              else "Private" if org == "private" else "All")
+                type_label = new_filter.lower() if new_filter != "All" else "all"
+                ai_msg = f"Showing <b>{type_label}</b> facilities now."
+                chat_history = chat_history + [(query, ai_msg)]
+                return _ret(cur_results or [], cur_meta or {}, new_filter,
+                            (cur_meta or {}).get("query", query), radius, cur_compare or [])
+
+        # Plain conversational response — show it, keep current results
+        chat_history = chat_history + [(query, str(response))]
+        return _ret(cur_results or [], cur_meta or {}, filter_val, query, radius, cur_compare or [])
 
     h_search_btn.click(
-        _do_search,
-        [h_query, h_rad, shortlist_state, filter_state, sort_state],
+        _do_chat,
+        [h_query, h_rad, shortlist_state, filter_state, sort_state,
+         results_state, meta_state, compare_state],
         [page_html, results_state, meta_state, query_state, radius_state, compare_state],
         api_name=_AN,
     )
