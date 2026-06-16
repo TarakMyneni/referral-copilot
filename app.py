@@ -556,37 +556,72 @@ def _make_qr_svg(text, scale=3):
 # ---------------------------------------------------------------------------
 
 _CHAT_SYSTEM = """\
-You are Suvidha, a friendly Indian healthcare referral assistant helping people find the right hospital.
+You are Suvidha, a warm and caring Indian healthcare assistant helping people find the right hospital quickly.
 
-CRITICAL: Always read the full conversation history. Location and care need mentioned in EARLIER messages carry over.
+CRITICAL: Always read the full conversation history. Location and care need from EARLIER messages carry over.
 
-Decision logic:
-1. SEARCH — if you know BOTH (a) a specific Indian location AND (b) a specific medical care need
-   (from ANY message in the conversation, current or past), respond with ONLY this JSON:
-   {"action":"search","care_need":"<english care need>","location":"<english city>","org_type":"<government|private|>"}
+━━━ DECISION LOGIC ━━━
 
-2. FILTER — if the user wants to show only govt or private hospitals from the current results:
+1. SEARCH — when you know BOTH (a) an Indian location AND (b) what medical care is needed
+   (from current or past messages), respond with ONLY this JSON (no other text):
+   {"action":"search","care_need":"<specialty in English>","location":"<city>","org_type":"<government|private|>"}
+
+2. FILTER — user wants to narrow current results to govt or private:
    {"action":"filter","org_type":"<government|private|all>"}
 
-3. ASK — if you are still missing EITHER the location OR the specific care need (after checking history),
-   ask ONE short clarifying question. Do not re-ask something already answered earlier.
+3. ASK — if location OR care need is still unclear, ask ONE warm, conversational question.
+   Do NOT ask about something already answered in the history.
 
-IMPORTANT rules:
-- "hospitals near X" / "best hospitals near X" / "clinic near X" are NOT specific care needs — ask what condition/specialty.
-- "Hebbal Bangalore" or "Koramangala Hyderabad" etc. are neighborhoods — extract the main city (Bangalore / Hyderabad).
+━━━ SYMPTOM → SPECIALTY MAPPING ━━━
+Always map symptoms to the right specialty for care_need. Use these as a guide:
+
+  Serious / urgent:
+    chest pain, heart attack, palpitations     → "cardiology"
+    can't breathe, severe breathlessness       → "pulmonology"
+    unconscious, major accident, heavy bleeding → "emergency"
+    seizure, sudden numbness, stroke signs     → "neurology"
+
+  Injuries:
+    leg injury, fracture, broken bone, sprain  → "orthopedics"
+    arm injury, shoulder pain, joint pain      → "orthopedics"
+    eye injury, foreign body in eye            → "ophthalmology"
+
+  Specialist needs:
+    kidney failure, dialysis                   → "dialysis"
+    pregnancy, delivery, maternity             → "maternity"
+    child / infant sick                        → "pediatrics"
+    skin rash, eczema                          → "dermatology"
+    stomach pain, acidity, jaundice            → "gastroenterology"
+    urinary burning, kidney stone              → "urology"
+    mental health, depression, anxiety         → "psychiatry"
+
+  Mild / common (when symptoms are not clearly serious):
+    fever, cold, cough, body ache, headache    → "general medicine"
+    weakness, vomiting, diarrhea, rash         → "general medicine"
+    routine checkup, blood pressure, diabetes  → "general medicine"
+    any vague symptom without enough context   → ask ONE question to understand severity,
+                                                 then route to the right specialty or "general medicine"
+
+━━━ IMPORTANT RULES ━━━
+- "hospitals near X" / "best hospitals" / "clinic near X" alone are NOT care needs — ask what condition.
+- Neighborhoods like "Hebbal Bangalore" → extract main city (Bangalore).
+- "within X km of Y" / "near Y" / "in Y" / "around Y" — Y is the location.
 - org_type: "government" for govt/sarkari/public/sarkar, "private" for private, "" otherwise.
-- Always respond in English.
+- Keep ASK responses warm, short, and conversational — like a caring friend, not a form.
 
-Examples:
-  user: "maternity near Delhi"           → {"action":"search","care_need":"maternity","location":"Delhi","org_type":""}
-  user: "dialysis" (prev search was in Delhi) → {"action":"search","care_need":"dialysis","location":"Delhi","org_type":""}
-  user: "show only govt ones"            → {"action":"filter","org_type":"government"}
-  user: "eye problem near Chennai"       → {"action":"search","care_need":"eye care","location":"Chennai","org_type":""}
+━━━ EXAMPLES ━━━
+  user: "maternity near Delhi"            → {"action":"search","care_need":"maternity","location":"Delhi","org_type":""}
+  user: "dialysis" (prior loc=Delhi)      → {"action":"search","care_need":"dialysis","location":"Delhi","org_type":""}
+  user: "show only govt ones"             → {"action":"filter","org_type":"government"}
+  user: "eye problem near Chennai"        → {"action":"search","care_need":"ophthalmology","location":"Chennai","org_type":""}
+  user: "leg injury within 5 km hyderabad" → {"action":"search","care_need":"orthopedics","location":"hyderabad","org_type":""}
+  user: "i have fever near jaipur"        → {"action":"search","care_need":"general medicine","location":"jaipur","org_type":""}
+  user: "i have fever"                    → ask "How long have you had the fever, and is it mild or quite high? Also, which city are you in?"
+  user: "headache for 2 days, i am in pune" → {"action":"search","care_need":"general medicine","location":"pune","org_type":""}
+  user: "severe headache suddenly near mumbai" → {"action":"search","care_need":"neurology","location":"mumbai","org_type":""}
   user: "govt hospitals for dialysis Jaipur" → {"action":"search","care_need":"dialysis","location":"Jaipur","org_type":"government"}
-  user: "hospitals near Pune"            → ask what specific condition/procedure they need
-  user: "Hebbal Bangalore"               → ask what kind of care near Bangalore
-  user: "I have chest pain"              → ask which city they're near
-  user: "need dialysis somewhere"        → ask which city
+  user: "hospitals near Pune"             → ask "What's the health concern? For example: fever, dialysis, maternity, eye care…"
+  user: "I have chest pain near Nagpur"   → {"action":"search","care_need":"cardiology","location":"nagpur","org_type":""}
 """
 
 
@@ -1778,12 +1813,13 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
 
         results = results[:10]
 
-        effective_filter = filter_val
-        if filter_val == "All" and org_type_hint:
-            if org_type_hint in ("government", "govt", "public", "sarkari"):
-                effective_filter = "Government"
-            elif org_type_hint == "private":
-                effective_filter = "Private"
+        # Always reset filter on a new search — ignore stale Private/Government state
+        if org_type_hint in ("government", "govt", "public", "sarkari"):
+            effective_filter = "Government"
+        elif org_type_hint == "private":
+            effective_filter = "Private"
+        else:
+            effective_filter = "All"
         return results, meta, effective_filter, radius
 
     def _do_chat(query, radius, shortlist, filter_val, sort_val, cur_results, cur_meta, cur_compare):
@@ -1801,7 +1837,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             meta = dict(meta or {})
             meta["chat_history"] = chat_history
             html = _render_page(results, shortlist, filt, sort_val, q, r, meta, compare)
-            return html, results, meta, "", r, compare
+            return html, results, meta, "", r, compare, filt
 
         if not query:
             return _ret(cur_results or [], cur_meta or {}, filter_val,
@@ -1813,30 +1849,23 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             m = dict(cur_meta or {})
             m["chat_history"] = chat_history
             html = _render_page(cur_results or [], shortlist, filter_val, sort_val, query, radius, m, [])
-            return html, cur_results or [], m, "", radius, []
+            return html, cur_results or [], m, "", radius, [], filter_val
 
         # Terms too generic to use as care_need — would match most/all hospitals
         _GENERIC_CARE = {"hospital", "hospitals", "clinic", "clinics", "healthcare",
                          "medical", "doctor", "doctors", "care", "health", "centre", "center"}
 
         # ── Fast local action detection (no LLM needed) ───────────────────
-        # Handles filter commands and pure care-need follow-ups so even when
-        # the LLM is slow or unavailable these feel conversational.
+        # Handles only filter commands — no LLM call here.
         def _local_action(q):
             ql = q.lower()
             govt_words = r"\b(govt|government|sarkari|public|sarkar|sarkari)\b"
             if re.search(govt_words, ql):
                 return {"action": "filter", "org_type": "government"}
-            if re.search(r"\bprivate\b", ql):
+            if re.search(r"\bprivate\b", ql) and re.search(r"\b(show|only|filter|just)\b", ql):
                 return {"action": "filter", "org_type": "private"}
-            if re.search(r"\b(show all|all hospitals|remove filter|any type|both)\b", ql):
+            if re.search(r"\b(show all|remove filter|any type|both types)\b", ql):
                 return {"action": "filter", "org_type": "all"}
-            # Single-word / short care-need with no location words and a known previous location
-            prev_loc = (cur_meta or {}).get("resolved_location", "")
-            if prev_loc and not re.search(r"\b(near|in|around|at|close to)\b", ql):
-                cn, loc, org = parse_combined_query(q, centroids)
-                if cn and cn.lower() not in _GENERIC_CARE and not loc:
-                    return {"action": "search", "care_need": cn, "location": prev_loc, "org_type": org}
             return None
 
         local = _local_action(query)
@@ -1874,7 +1903,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 meta["chat_history"] = chat_history
                 search_q = f"{care_need} near {location}"
                 html = _render_page(results, shortlist, eff_filt, sort_val, search_q, radius, meta, [])
-                return html, results, meta, "", radius, []
+                return html, results, meta, "", radius, [], eff_filt
             if location and not valid_care:
                 ai_msg = f"Sure! What kind of medical care do you need near <b>{location.title()}</b>? For example: dialysis, eye care, maternity, cardiology…"
             elif care_need and not location:
@@ -1885,7 +1914,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             m = dict(cur_meta or {})
             m["chat_history"] = chat_history
             html = _render_page(cur_results or [], shortlist, filter_val, sort_val, query, radius, m, [])
-            return html, cur_results or [], m, "", radius, []
+            return html, cur_results or [], m, "", radius, [], filter_val
 
         if is_action:
             action = response
@@ -1934,7 +1963,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 meta["chat_history"] = chat_history
                 search_q = f"{care_need} near {location}"
                 html = _render_page(results, shortlist, eff_filt, sort_val, search_q, radius, meta, [])
-                return html, results, meta, "", radius, []
+                return html, results, meta, "", radius, [], eff_filt
 
             elif action.get("action") == "filter":
                 org = (action.get("org_type", "") or "").lower()
@@ -1954,7 +1983,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         _do_chat,
         [h_query, h_rad, shortlist_state, filter_state, sort_state,
          results_state, meta_state, compare_state],
-        [page_html, results_state, meta_state, query_state, radius_state, compare_state],
+        [page_html, results_state, meta_state, query_state, radius_state, compare_state, filter_state],
         api_name=_AN,
     )
 
