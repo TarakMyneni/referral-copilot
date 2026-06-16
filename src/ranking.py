@@ -34,7 +34,7 @@ Symptom → specialty mapping (always use the specialty, not the raw symptom):
   pregnancy, delivery, antenatal, maternity                                     → "maternity"
   kidney, dialysis                                                               → "dialysis"
   seizure, brain, stroke, paralysis, numbness                                   → "neurology"
-  child sick, infant, newborn                                                   → "pediatrics"
+  child / kid / kids / baby sick, infant, newborn, children's hospital         → "pediatrics"
   stomach pain, acidity, jaundice, liver                                        → "gastroenterology"
   skin rash, eczema, skin infection                                             → "dermatology"
   breathing difficulty, asthma, lung                                            → "pulmonology"

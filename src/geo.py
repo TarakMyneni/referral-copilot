@@ -155,20 +155,37 @@ def build_pincode_centroids(pincode_df):
     return result
 
 
+_REGIONAL_SUFFIXES = frozenset({
+    "region", "division", "district", "state", "area", "zone",
+    "sector", "circle", "block", "taluk", "tehsil", "mandal",
+})
+
+
 def _nearest_centroid(lat, lon, city_centroids, max_km=100):
     """
-    Return the centroid key in city_centroids nearest to (lat, lon).
-    Returns None if no centroid is within max_km.
-    PIN-code-only keys (pure digits) are excluded.
+    Return the centroid key nearest to (lat, lon), preferring plain city
+    names over regional aggregates (e.g. "mumbai" beats "mumbai region").
+    PIN-code keys (pure digits) are always excluded.
     """
-    best_key, best_dist = None, float("inf")
+    best_city_key,   best_city_dist   = None, float("inf")
+    best_region_key, best_region_dist = None, float("inf")
     for k, c in city_centroids.items():
         if k.isdigit():
             continue
         d = haversine_km(lat, lon, c["lat"], c["lon"])
-        if d < best_dist:
-            best_dist, best_key = d, k
-    return best_key if best_dist <= max_km else None
+        is_regional = bool(set(k.split()) & _REGIONAL_SUFFIXES)
+        if not is_regional:
+            if d < best_city_dist:
+                best_city_dist, best_city_key = d, k
+        else:
+            if d < best_region_dist:
+                best_region_dist, best_region_key = d, k
+    # Plain city names win; regional names are only used as last resort
+    if best_city_key and best_city_dist <= max_km:
+        return best_city_key
+    if best_region_key and best_region_dist <= max_km:
+        return best_region_key
+    return None
 
 
 def resolve_location(query_location, centroids):

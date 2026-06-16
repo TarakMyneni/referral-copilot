@@ -110,7 +110,10 @@ CARE_NEED_SYNONYMS = {
     "pediatrics": [
         "pediatric", "paediatric",                       # "pediatricSurgery" expanded
         "neonatology", "neonatal", "infant",
-        "child",
+        "child", "children", "children's",
+        "kid", "kids", "baby", "newborn",
+        "child health", "child care", "child hospital",
+        "sncu", "nicu",
     ],
     "general surgery": [
         "general surgery", "surgery",

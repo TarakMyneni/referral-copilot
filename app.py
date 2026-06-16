@@ -627,7 +627,8 @@ Always map symptoms to the right specialty for care_need. Use these as a guide:
   Specialist needs:
     kidney failure, dialysis                   → "dialysis"
     pregnancy, delivery, maternity             → "maternity"
-    child / infant sick                        → "pediatrics"
+    child / infant / kid / kids / baby sick    → "pediatrics"
+    children's hospital / kid hospital / baby hospital → "pediatrics"
     skin rash, eczema                          → "dermatology"
     stomach pain, acidity, jaundice            → "gastroenterology"
     urinary burning, kidney stone              → "urology"
