@@ -238,19 +238,30 @@ _RMA = "#h-rm-idx textarea,#h-rm-idx input"
 _CLA = "#h-clear-tx textarea,#h-clear-tx input"
 _EXA = "#h-export-tx textarea,#h-export-tx input"
 
-def _jtap(sel, jsval):
-    """Inline JS: set bridge textbox value (jsval = JS expression) and dispatch Enter."""
+def _jtap(val_sel, jsval, btn_id):
+    """Set bridge textbox value then programmatically click the hidden trigger button.
+    Using button.click() is more reliable than synthetic keydown in Gradio/Svelte."""
+    bsel = f"#{btn_id} button,button#{btn_id}"
     return (
-        f"(function(){{var e=document.querySelector('{sel}');"
+        f"(function(){{"
+        f"var e=document.querySelector('{val_sel}');"
         f"if(!e)return;"
         f"e.value={jsval};"
         f"e.dispatchEvent(new Event('input',{{bubbles:true}}));"
-        f"setTimeout(function(){{e.dispatchEvent(new KeyboardEvent('keydown',"
-        f"{{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}}));}},80);"
+        f"setTimeout(function(){{"
+        f"var b=document.querySelector('{bsel}');"
+        f"if(b)b.click();"
+        f"}},80);"
         f"}})();"
     )
 
-# Inline search action — reads from the visible vi-query / vi-radius inputs
+def _jclick(btn_id):
+    """Inline JS: click a hidden trigger button (no value to pass)."""
+    bsel = f"#{btn_id} button,button#{btn_id}"
+    return f"(function(){{var b=document.querySelector('{bsel}');if(b)b.click();}})();"
+
+# Inline search action — reads from the visible vi-query / vi-radius inputs,
+# sets the hidden bridge textboxes, then clicks the hidden search button.
 _JS_SEARCH_INLINE = (
     "(function(){"
     "var inp=document.getElementById('vi-query');"
@@ -260,9 +271,11 @@ _JS_SEARCH_INLINE = (
     "var ra=document.querySelector('#h-rad textarea,#h-rad input');"
     "var qa=document.querySelector('#h-query textarea,#h-query input');"
     "if(ra){ra.value=r;ra.dispatchEvent(new Event('input',{bubbles:true}));}"
-    "if(qa){qa.value=q;qa.dispatchEvent(new Event('input',{bubbles:true}));"
-    "setTimeout(function(){qa.dispatchEvent(new KeyboardEvent('keydown',"
-    "{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));},80);}"
+    "if(qa){qa.value=q;qa.dispatchEvent(new Event('input',{bubbles:true}));}"
+    "setTimeout(function(){"
+    "var b=document.querySelector('#h-search-btn button,button#h-search-btn');"
+    "if(b)b.click();"
+    "},80);"
     "})()"
 )
 
@@ -276,9 +289,11 @@ def _js_suggestion(q):
         f"var qa=document.querySelector('#h-query textarea,#h-query input');"
         f"if(ra){{ra.value='50';ra.dispatchEvent(new Event('input',{{bubbles:true}}));}}"
         f"if(qa){{qa.value='{sq}';"
-        f"qa.dispatchEvent(new Event('input',{{bubbles:true}}));"
-        f"setTimeout(function(){{qa.dispatchEvent(new KeyboardEvent('keydown',"
-        f"{{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}}));}},80);}}"
+        f"qa.dispatchEvent(new Event('input',{{bubbles:true}}));}}"
+        f"setTimeout(function(){{"
+        f"var b=document.querySelector('#h-search-btn button,button#h-search-btn');"
+        f"if(b)b.click();"
+        f"}},80);"
         f"}})();"
     )
 
@@ -420,13 +435,13 @@ def _filterbar_html(filter_val, sort_val, n_results):
             st = f"background:{GRN_MID};color:{GRN_PALE};border:1px solid {GRN_MID};"
         else:
             st = f"background:#fff;color:{GRN_MID};border:1px solid {BORDER_G};"
-        js = _jtap(_FA, f"'{val}'")
+        js = _jtap(_FA, f"'{val}'", "h-filter-btn")
         return (f'<button onclick="{js}" style="{st}'
                 f'border-radius:20px;padding:5px 14px;font-size:12px;cursor:pointer;'
                 f'font-family:inherit;">{txt}</button>')
 
     new_sort = "Best match" if sort_val == "Nearest first" else "Nearest first"
-    sort_js = _jtap(_SA, f"'{new_sort}'")
+    sort_js = _jtap(_SA, f"'{new_sort}'", "h-sort-btn")
     sort_btn = (
         f'<button onclick="{sort_js}" '
         f'style="background:#fff;border:0.5px solid {BORDER};border-radius:20px;'
@@ -524,7 +539,7 @@ def _card_html(rank, r, shortlist):
     # Escape fid for inline JS (no quotes/backslashes expected in IDs)
     safe_fid = fid.replace("'", "\\'")
 
-    bm_onclick = _jtap(_BA, "'" + safe_fid + "'")
+    bm_onclick = _jtap(_BA, "'" + safe_fid + "'", "h-bm-btn")
 
     sem_pill = ""
     if r.get("sem_score", 0) > 0:
@@ -680,6 +695,7 @@ def _shortlist_panel_html(shortlist):
     for i, s in enumerate(shortlist):
         _, tbg, tbdr, tclr, tlbl = TRUST_CFG.get(s.get("trust",""), _TRUST_DEFAULT)
         dist_s = f"{s['distance_km']} km" if s.get("distance_km") is not None else "—"
+        rm_onclick = _jtap(_RMA, str(i), "h-rm-btn")
         items += f"""
 <div style="background:{BG_PAGE};border:0.5px solid {BORDER_G};border-radius:7px;
             padding:7px 10px;margin-bottom:5px;display:flex;
@@ -693,13 +709,16 @@ def _shortlist_panel_html(shortlist):
                    padding:1px 5px;color:{tclr};">{tlbl}</span>
     </div>
   </div>
-  <button onclick="{_jtap(_RMA, str(i))}"
+  <button onclick="{rm_onclick}"
     style="background:none;border:none;cursor:pointer;font-size:16px;
            color:{TXT_MUT};flex-shrink:0;padding:0;line-height:1;">×</button>
 </div>"""
 
+    clear_onclick  = _jclick("h-clear-btn")
+    export_onclick = _jclick("h-export-btn-gr")
+
     export_btn = (
-        f'<button onclick="{_jtap(_EXA, "String(Date.now())")}" style="width:100%;background:{GRN_MID};color:{GRN_PALE};'
+        f'<button onclick="{export_onclick}" style="width:100%;background:{GRN_MID};color:{GRN_PALE};'
         f'border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:500;'
         f'cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;'
         f'margin-top:8px;font-family:inherit;">'
@@ -723,7 +742,7 @@ def _shortlist_panel_html(shortlist):
         <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
         <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
       </svg>Shortlist{badge}</span>
-    <span onclick="{_jtap(_CLA, "String(Date.now())")}"
+    <span onclick="{clear_onclick}"
       style="font-size:11px;color:{TXT_MUT};text-decoration:underline;cursor:pointer;">Clear</span>
   </div>
   {items if items else empty_msg}
@@ -918,13 +937,11 @@ body, .gradio-container { background: #F7FAF3 !important; }
 footer { display: none !important; }
 .gr-prose { padding: 0 !important; }
 
-/* Hide the entire bridge column visually while keeping it in the DOM.
-   display:none (CSS) does NOT remove elements from DOM — querySelector still
-   finds them, Svelte event listeners still fire. This is the key difference
-   from visible=False which uses Svelte {#if} and removes from DOM entirely. */
-#sv-bridge {
-    display: none !important;
-}
+/* Hide bridge column and all bridge components.
+   display:none keeps elements in DOM so querySelector still finds them and
+   button.click() still fires — unlike visible=False which removes from DOM. */
+#sv-bridge { display: none !important; }
+.sv-hide   { display: none !important; }
 """
 
 with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
@@ -946,21 +963,27 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     page_html = gr.HTML(_render_page([], [], "All", "Nearest first", "", 50))
 
     # ── Bridge components ─────────────────────────────────────────────────
-    # Wrapped in a Column with elem_id="sv-bridge".
-    # CSS sets #sv-bridge { display:none } which hides visually but KEEPS in DOM
-    # (unlike visible=False which uses Svelte {#if} and removes from DOM entirely,
-    #  breaking JS querySelector).
-    # JS dispatches KeyboardEvent('keydown', {key:'Enter'}) on the textareas to
-    # trigger Gradio's .submit() handlers — more reliable than clicking hidden buttons.
+    # All wrapped in #sv-bridge (CSS display:none) and given class sv-hide.
+    # CSS hides them visually but keeps them in DOM so button.click() fires.
+    # Architecture: JS sets textbox value + dispatches input event (updates
+    # Svelte's reactive binding), then clicks the hidden trigger button after
+    # 80ms. Button.click() is more reliable than synthetic keydown events.
+    _SHIDE = ["sv-hide"]
     with gr.Column(elem_id="sv-bridge"):
-        h_query    = gr.Textbox(value="",              elem_id="h-query")
-        h_rad      = gr.Textbox(value="50",            elem_id="h-rad")
-        h_filter   = gr.Textbox(value="All",           elem_id="h-filter")
-        h_sort     = gr.Textbox(value="Nearest first", elem_id="h-sort")
-        h_bm_id    = gr.Textbox(value="",              elem_id="h-bm-id")
-        h_rm_idx   = gr.Textbox(value="",              elem_id="h-rm-idx")
-        h_clear_tx = gr.Textbox(value="",              elem_id="h-clear-tx")
-        h_export_tx= gr.Textbox(value="",              elem_id="h-export-tx")
+        h_query  = gr.Textbox(value="",              elem_id="h-query",  label="", elem_classes=_SHIDE)
+        h_rad    = gr.Textbox(value="50",            elem_id="h-rad",    label="", elem_classes=_SHIDE)
+        h_filter = gr.Textbox(value="All",           elem_id="h-filter", label="", elem_classes=_SHIDE)
+        h_sort   = gr.Textbox(value="Nearest first", elem_id="h-sort",   label="", elem_classes=_SHIDE)
+        h_bm_id  = gr.Textbox(value="",             elem_id="h-bm-id",  label="", elem_classes=_SHIDE)
+        h_rm_idx = gr.Textbox(value="",             elem_id="h-rm-idx", label="", elem_classes=_SHIDE)
+        # One trigger button per action — JS calls element.click() on these
+        h_search_btn    = gr.Button("", elem_id="h-search-btn",    elem_classes=_SHIDE)
+        h_filter_btn    = gr.Button("", elem_id="h-filter-btn",    elem_classes=_SHIDE)
+        h_sort_btn      = gr.Button("", elem_id="h-sort-btn",      elem_classes=_SHIDE)
+        h_bm_btn        = gr.Button("", elem_id="h-bm-btn",        elem_classes=_SHIDE)
+        h_rm_btn        = gr.Button("", elem_id="h-rm-btn",        elem_classes=_SHIDE)
+        h_clear_btn     = gr.Button("", elem_id="h-clear-btn",     elem_classes=_SHIDE)
+        h_export_btn_gr = gr.Button("", elem_id="h-export-btn-gr", elem_classes=_SHIDE)
 
     export_file = gr.File(label="Download shortlist", visible=False)
 
@@ -996,7 +1019,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         html = _render_page(results, shortlist, filter_val, sort_val, query, radius, meta)
         return html, results, meta, query, radius
 
-    h_query.submit(
+    h_search_btn.click(
         _do_search,
         [h_query, h_rad, shortlist_state, filter_state, sort_state],
         [page_html, results_state, meta_state, query_state, radius_state],
@@ -1007,7 +1030,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     def _do_filter(fv, results, shortlist, sort_val, query, radius, meta):
         return _render_page(results, shortlist, fv, sort_val, query, radius, meta), fv
 
-    h_filter.submit(
+    h_filter_btn.click(
         _do_filter,
         [h_filter, results_state, shortlist_state, sort_state,
          query_state, radius_state, meta_state],
@@ -1018,7 +1041,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     def _do_sort(sv, results, shortlist, filter_val, query, radius, meta):
         return _render_page(results, shortlist, filter_val, sv, query, radius, meta), sv
 
-    h_sort.submit(
+    h_sort_btn.click(
         _do_sort,
         [h_sort, results_state, shortlist_state, filter_state,
          query_state, radius_state, meta_state],
@@ -1053,7 +1076,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 pass
         return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
 
-    h_bm_id.submit(
+    h_bm_btn.click(
         _do_bookmark,
         [h_bm_id, results_state, shortlist_state, filter_state, sort_state,
          query_state, radius_state, meta_state],
@@ -1068,7 +1091,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             pass
         return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
 
-    h_rm_idx.submit(
+    h_rm_btn.click(
         _do_remove,
         [h_rm_idx, results_state, shortlist_state, filter_state, sort_state,
          query_state, radius_state, meta_state],
@@ -1076,24 +1099,24 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     )
 
     # ── Clear shortlist ───────────────────────────────────────────────────
-    def _do_clear(_, results, shortlist, filter_val, sort_val, query, radius, meta):
+    def _do_clear(results, shortlist, filter_val, sort_val, query, radius, meta):
         return _render_page(results, [], filter_val, sort_val, query, radius, meta), []
 
-    h_clear_tx.submit(
+    h_clear_btn.click(
         _do_clear,
-        [h_clear_tx, results_state, shortlist_state, filter_state, sort_state,
+        [results_state, shortlist_state, filter_state, sort_state,
          query_state, radius_state, meta_state],
         [page_html, shortlist_state], api_name=_AN,
     )
 
     # ── Export ────────────────────────────────────────────────────────────
-    def _do_export(_, shortlist):
+    def _do_export(shortlist):
         if not shortlist:
             return gr.update(visible=False)
         path = _export_csv(shortlist)
         return gr.update(value=path, visible=True)
 
-    h_export_tx.submit(_do_export, [h_export_tx, shortlist_state], [export_file], api_name=_AN)
+    h_export_btn_gr.click(_do_export, [shortlist_state], [export_file], api_name=_AN)
 
 
 if __name__ == "__main__":
