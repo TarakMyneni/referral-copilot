@@ -1,3 +1,4 @@
+import difflib
 import math
 import pandas as pd
 
@@ -67,18 +68,33 @@ def resolve_location(query_location, centroids):
     """
     Return (lat, lon, matched_name, match_type).
     match_type: "exact" | "fuzzy" | "not_found"
+
+    Resolution order:
+      1. Exact lowercase match
+      2. Substring match (either direction) — catches "new delhi" ↔ "delhi"
+      3. Edit-distance fuzzy match (difflib) — catches typos like
+         "kolekatta" → "kolkata", "banglore" → "bangalore"
     """
     key = query_location.strip().lower()
 
+    # 1. Exact
     if key in centroids:
         c = centroids[key]
         return c["lat"], c["lon"], key, "exact"
 
-    # Fuzzy: substring match either direction
+    # 2. Substring either direction
     candidates = [c for c in centroids if key in c or c in key]
     if candidates:
         best = min(candidates, key=len)
         c = centroids[best]
+        return c["lat"], c["lon"], best, "fuzzy"
+
+    # 3. Edit-distance fuzzy — handles misspellings / phonetic variants
+    close = difflib.get_close_matches(key, centroids.keys(), n=1, cutoff=0.70)
+    if close:
+        best = close[0]
+        c = centroids[best]
+        print(f"[Geo] Fuzzy matched '{query_location}' → '{best}'")
         return c["lat"], c["lon"], best, "fuzzy"
 
     return None, None, None, "not_found"

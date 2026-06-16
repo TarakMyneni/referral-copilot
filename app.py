@@ -206,6 +206,53 @@ def _s(v):
     s = str(v or "")
     return "" if s in ("nan", "None") else s
 
+_LIST_FIELDS = {"specialties", "capability", "procedure", "equipment"}
+
+def _fmt_field(field, raw):
+    """Format a raw DB field value for readable display in the chip popup.
+
+    Silver expands camelCase → space-separated words, so we get strings like
+    'gynecology And Obstetrics, neonatology Perinatal Medicine'.
+    We normalise capitalisation and format list fields as readable bullet lines.
+    """
+    import re
+    if not raw or not raw.strip():
+        return "—"
+    text = " ".join(raw.split())   # collapse whitespace
+
+    if field == "description":
+        # Paragraph — capitalise first letter, truncate, HTML-escape
+        text = text[0].upper() + text[1:] if text else text
+        out  = (text[:320] + "…") if len(text) > 320 else text
+        return out.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # List field: split on commas/semicolons, clean each item
+    parts = [p.strip() for p in re.split(r"[,;]+", text) if p.strip()]
+    seen, clean = set(), []
+    for p in parts:
+        item = p.lower().title()          # fix "And", "Of" → "And", "Of" (acceptable)
+        key  = item.lower()
+        if key not in seen:
+            seen.add(key)
+            clean.append(item)
+
+    if not clean:
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    shown = clean[:10]
+    extra = len(clean) - 10
+    lines = "".join(
+        f'<span style="display:inline-block;background:#EAF3DE;border:0.5px solid #C0DD97;'
+        f'border-radius:10px;padding:2px 8px;font-size:11px;color:#27500A;'
+        f'margin:2px 3px 2px 0;">{item}</span>'
+        for item in shown
+    )
+    if extra > 0:
+        lines += (
+            f'<span style="font-size:10px;color:#888780;margin-left:2px;">+{extra} more</span>'
+        )
+    return lines
+
 def _is_govt(r):
     ot = _s(r.get("org_type", "")).lower()
     return any(w in ot for w in ("government", "govt", "public", "municipal", "district"))
@@ -489,33 +536,37 @@ def _card_html(rank, r, shortlist):
     dist  = r.get("distance_km")
     dist_s = f"{dist} km" if dist is not None else "—"
 
-    # Evidence chips — click to expand and see the actual field text
+    # Evidence chips — click to expand and see the actual field text (formatted)
     id_slug = "".join(c for c in str(fid)[:16] if c.isalnum()) or "f"
     chips_html = ""
     for m in ev["matching"]:
-        field = m["field"]
-        label = FIELD_LABELS.get(field, field)
-        raw   = m.get("text", "").strip()
-        snippet = (raw[:280] + "…") if len(raw) > 280 else raw
-        snippet = snippet.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        cid = f"ev-{id_slug}-{field}"
+        field   = m["field"]
+        label   = FIELD_LABELS.get(field, field)
+        raw     = m.get("text", "").strip()
+        content = _fmt_field(field, raw)   # cleaned, formatted HTML
+        cid     = f"ev-{id_slug}-{field}"
         toggle_js = (
             f"(function(){{"
             f"var d=document.getElementById('{cid}');"
             f"if(d)d.style.display=d.style.display==='block'?'none':'block';"
             f"}})();"
         )
+        # Header label inside the expanded panel
+        field_label_html = (
+            f'<div style="font-size:9px;font-weight:600;color:{TXT_MUT};'
+            f'text-transform:uppercase;letter-spacing:0.4px;margin-bottom:5px;">'
+            f'{label}</div>'
+        )
         chips_html += (
-            f'<span onclick="{toggle_js}" title="Click to expand {label}"'
+            f'<span onclick="{toggle_js}" title="Click to see {label} details"'
             f' style="background:{GRN_PALE};border:0.5px solid {BORDER_G};'
             f'border-radius:12px;padding:2px 10px;font-size:11px;color:{GRN_DK};'
             f'margin:2px 3px 2px 0;display:inline-block;cursor:pointer;'
             f'user-select:none;">{label} ▾</span>'
-            f'<div id="{cid}" style="display:none;background:#F4FAF0;'
+            f'<div id="{cid}" style="display:none;background:#F8FBF5;'
             f'border:0.5px solid {BORDER_G};border-radius:6px;'
-            f'padding:6px 10px;font-size:11px;color:{TXT_SEC};'
-            f'margin:2px 0 5px 0;line-height:1.5;word-break:break-word;">'
-            f'{snippet or "—"}</div>'
+            f'padding:8px 10px;margin:3px 0 6px 0;line-height:1.6;">'
+            f'{field_label_html}{content}</div>'
         )
 
     missing = ev.get("missing", [])
