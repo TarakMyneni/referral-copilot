@@ -122,30 +122,39 @@ def _load_centroids():
 
 
 # ---------------------------------------------------------------------------
-# Startup: load data, build indexes, wire feedback
+# Startup: load data in background so Gradio starts immediately
 # ---------------------------------------------------------------------------
+import threading
 
-_STARTUP_ERROR = None
+df                = pd.DataFrame()
+centroids         = {}
+_total_facilities = 0
+_total_cities     = 0
+_total_locations  = 0
+_STARTUP_ERROR    = None
+_data_ready       = False
 
-try:
-    df        = _load_silver()
-    centroids = _load_centroids()
 
-    feedback_store.load(_sdk_query)
+def _background_load():
+    global df, centroids, _total_facilities, _total_cities
+    global _total_locations, _STARTUP_ERROR, _data_ready
+    try:
+        print("[App] Background load starting …")
+        df        = _load_silver()
+        centroids = _load_centroids()
+        feedback_store.load(_sdk_query)
+        _total_facilities = len(df)
+        _total_cities     = df[COLUMNS["city"]].dropna().nunique() if not df.empty else 0
+        _total_locations  = len(centroids)
+        _data_ready       = True
+        print(f"[App] Ready — {_total_facilities:,} facilities, {_total_locations:,} locations")
+    except Exception as _e:
+        import traceback
+        _STARTUP_ERROR = f"{type(_e).__name__}: {_e}\n\n{traceback.format_exc()}"
+        print(f"[App] BACKGROUND LOAD FAILED:\n{_STARTUP_ERROR}")
 
-    _total_facilities = len(df)
-    _total_cities     = df[COLUMNS["city"]].dropna().nunique() if not df.empty else 0
-    _total_locations  = len(centroids)
 
-except Exception as _e:
-    import traceback
-    _STARTUP_ERROR = f"{type(_e).__name__}: {_e}\n\n{traceback.format_exc()}"
-    print(f"[App] STARTUP FAILED:\n{_STARTUP_ERROR}")
-    df                  = pd.DataFrame()
-    centroids           = {}
-    _total_facilities   = 0
-    _total_cities       = 0
-    _total_locations    = 0
+threading.Thread(target=_background_load, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +336,11 @@ def build_map_html(results, search_lat, search_lon):
 # ---------------------------------------------------------------------------
 
 def run_search(location, care_need, radius_km):
+    if not _data_ready:
+        msg = (f'<div style="padding:16px;color:#888;">'
+               f'{"⚠ " + _STARTUP_ERROR if _STARTUP_ERROR else "⏳ Data is still loading — please wait ~30 seconds and try again."}'
+               f'</div>')
+        return msg, [], "", ""
     if not location.strip() or not care_need.strip():
         return "Please enter both a location and a care need.", [], "", ""
 
@@ -484,8 +498,8 @@ with gr.Blocks(title="Referral Copilot", css=CSS) as demo:
         f'with the evidence behind each match, what\'s missing, and what to verify before referring a patient.'
         f'</div>'
         f'<div style="font-size:11px;color:#EEEDE9;opacity:0.5;margin-top:8px;">'
-        f'{_total_facilities:,} facilities &nbsp;·&nbsp; {_total_cities:,} cities &nbsp;·&nbsp; '
-        f'{_total_locations:,} searchable locations &nbsp;·&nbsp; DAIS for Good Hackathon 2026'
+        f'{"⏳ Loading data…" if not _data_ready else f"{_total_facilities:,} facilities · {_total_cities:,} cities · {_total_locations:,} searchable locations"}'
+        f' &nbsp;·&nbsp; DAIS for Good Hackathon 2026'
         f'</div></div>'
         + (f'<div style="background:#fff0f0;border:1px solid #c00;border-radius:8px;'
            f'padding:12px 16px;margin-top:8px;font-family:monospace;font-size:11px;'
