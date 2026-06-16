@@ -680,7 +680,7 @@ footer {{ display: none !important; }}
 # UI
 # ---------------------------------------------------------------------------
 
-with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS, show_api=False) as demo:
+with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS) as demo:
 
     results_state   = gr.State([])
     shortlist_state = gr.State([])
@@ -789,30 +789,32 @@ with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS, show_api=False
     _SEARCH_OUTS = [results_html, results_state, map_html,
                     care_need_state, shortlist_state, shortlist_html]
 
+    _AN = False  # api_name=False on every handler suppresses the schema crash
+
     search_btn.click(
         _combined_search,
         [where_box, need_box, radius_slider, shortlist_state],
-        _SEARCH_OUTS,
+        _SEARCH_OUTS, api_name=_AN,
     )
     where_box.submit(
         _combined_search,
         [where_box, need_box, radius_slider, shortlist_state],
-        _SEARCH_OUTS,
+        _SEARCH_OUTS, api_name=_AN,
     )
     need_box.submit(
         _combined_search,
         [where_box, need_box, radius_slider, shortlist_state],
-        _SEARCH_OUTS,
+        _SEARCH_OUTS, api_name=_AN,
     )
     smart_btn.click(
         _smart_search,
         [smart_box, radius_slider, shortlist_state],
-        _SEARCH_OUTS,
+        _SEARCH_OUTS, api_name=_AN,
     )
     smart_box.submit(
         _smart_search,
         [smart_box, radius_slider, shortlist_state],
-        _SEARCH_OUTS,
+        _SEARCH_OUTS, api_name=_AN,
     )
 
     # Filter/sort
@@ -823,22 +825,22 @@ with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS, show_api=False
     filter_all.click(
         lambda r, sl, sv: _set_filter("All", r, sl, sv),
         [results_state, shortlist_state, sort_state],
-        [filter_state, results_html],
+        [filter_state, results_html], api_name=_AN,
     )
     filter_govt.click(
         lambda r, sl, sv: _set_filter("Government", r, sl, sv),
         [results_state, shortlist_state, sort_state],
-        [filter_state, results_html],
+        [filter_state, results_html], api_name=_AN,
     )
     filter_priv.click(
         lambda r, sl, sv: _set_filter("Private", r, sl, sv),
         [results_state, shortlist_state, sort_state],
-        [filter_state, results_html],
+        [filter_state, results_html], api_name=_AN,
     )
     sort_radio.change(
         lambda sv, r, sl, fv: (sv, do_filter_sort(r, sl, fv, sv)),
         [sort_radio, results_state, shortlist_state, filter_state],
-        [sort_state, results_html],
+        [sort_state, results_html], api_name=_AN,
     )
 
     # Bookmark
@@ -850,7 +852,6 @@ with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS, show_api=False
             f'border-radius:20px;padding:5px 12px;font-size:12px;color:{GRN_MID};'
             f'white-space:nowrap;flex-shrink:0;">🔖 {n} saved</div>'
         )
-        # Re-render results with updated bookmark state
         cards = "".join(_build_card(i + 1, r, sl)
                         for i, r in enumerate(results))
         return sl, sl_html, "", saved_html, cards
@@ -859,6 +860,7 @@ with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS, show_api=False
         _bookmark,
         [bm_id_box, results_state, shortlist_state, care_need_state],
         [shortlist_state, shortlist_html, bm_id_box, saved_count_html, results_html],
+        api_name=_AN,
     )
 
     # Remove from shortlist
@@ -876,6 +878,7 @@ with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS, show_api=False
         _remove,
         [rm_idx_box, shortlist_state],
         [shortlist_state, shortlist_html, rm_idx_box, saved_count_html],
+        api_name=_AN,
     )
 
     clear_trigger.click(
@@ -886,10 +889,11 @@ with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS, show_api=False
                     f'white-space:nowrap;flex-shrink:0;">🔖 0 saved</div>'),
         [shortlist_state],
         [shortlist_state, shortlist_html, saved_count_html],
+        api_name=_AN,
     )
 
-    export_btn.click(do_export, [shortlist_state], [export_file])
-    export_btn.click(lambda: gr.update(visible=True), outputs=[export_file])
+    export_btn.click(do_export, [shortlist_state], [export_file], api_name=_AN)
+    export_btn.click(lambda: gr.update(visible=True), outputs=[export_file], api_name=_AN)
 
 
 if __name__ == "__main__":
