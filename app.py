@@ -54,6 +54,17 @@ TRUST_CFG = {
 }
 _TRUST_DEFAULT = ("verify", "#FAECE7", "#F0997B", "#712B13", "⚠ Verify")
 
+_TRUST_ORDER = {
+    "✓ Strong evidence":    0,
+    "◐ Partial evidence":   1,
+    "⚠️ Needs verification": 2,
+}
+
+def _trust_tier(r):
+    return _TRUST_ORDER.get(trust_label(r["evidence"]), 3)
+
+_DEFAULT_SORT = "Evidence first"
+
 FIELD_LABELS = {
     "specialties": "specialties", "description": "description",
     "capability": "capability", "procedure": "procedure",
@@ -352,6 +363,325 @@ def _js_suggestion(q):
         f"}})();"
     )
 
+# Bridge selectors for the new compare / checklist actions
+_CMPA = "#h-cmp-id textarea,#h-cmp-id input"
+_CHKA = "#h-chk-id textarea,#h-chk-id input"
+
+# ---------------------------------------------------------------------------
+# Care-need checklists
+# ---------------------------------------------------------------------------
+
+CARE_CHECKLISTS = {
+    "maternity": [
+        "Aadhaar card (patient + attendant)",
+        "Health insurance / Ayushman Bharat card",
+        "Mother & Child protection card",
+        "Antenatal care records & ultrasound reports",
+        "Blood group certificate",
+        "Previous gynaecologist prescription",
+        "Emergency contact number",
+    ],
+    "dialysis": [
+        "Aadhaar card",
+        "Health insurance card",
+        "Nephrologist referral letter",
+        "Recent lab reports (creatinine, BUN, electrolytes)",
+        "Dialysis access records (fistula / catheter)",
+        "Current medication list",
+        "Previous dialysis session records",
+    ],
+    "cardiology": [
+        "Aadhaar card",
+        "Health insurance card",
+        "ECG reports (latest)",
+        "Echocardiogram report",
+        "Angiography reports (if done previously)",
+        "Current medication list",
+        "Cardiologist referral letter",
+    ],
+    "emergency": [
+        "Aadhaar card",
+        "Health insurance card",
+        "Any available medical history summary",
+        "Current medications list",
+        "Emergency contact details",
+        "Blood group information",
+    ],
+    "oncology": [
+        "Aadhaar card",
+        "Health insurance card",
+        "Biopsy / pathology reports",
+        "Previous treatment records (chemo / radiation)",
+        "Imaging reports (CT / MRI / PET scan)",
+        "Oncologist referral letter",
+        "Current medication list",
+    ],
+    "orthopedics": [
+        "Aadhaar card",
+        "Health insurance card",
+        "X-ray / MRI reports of affected area",
+        "Previous orthopaedic consultation notes",
+        "Current medication list",
+        "Physiotherapy records (if any)",
+    ],
+    "ophthalmology": [
+        "Aadhaar card",
+        "Health insurance card",
+        "Previous eye prescription / glasses",
+        "Fundus / retinal scan reports (if any)",
+        "Current eye drops / medications",
+        "History of eye surgeries (if any)",
+    ],
+    "neurology": [
+        "Aadhaar card",
+        "Health insurance card",
+        "MRI / CT scan of brain / spine",
+        "EEG reports (if epilepsy-related)",
+        "Current medication list",
+        "Neurologist referral letter",
+    ],
+    "pediatrics": [
+        "Aadhaar card (child + parent / guardian)",
+        "Health insurance card",
+        "Vaccination / immunisation records",
+        "Birth certificate / hospital discharge summary",
+        "Growth and development records",
+        "Current medication list",
+    ],
+    "icu": [
+        "Aadhaar card",
+        "Health insurance card",
+        "All available medical records",
+        "Current medications and dosage",
+        "Blood group certificate",
+        "Emergency contact details",
+        "Power of attorney (if patient is incapacitated)",
+    ],
+    "general surgery": [
+        "Aadhaar card",
+        "Health insurance card",
+        "Surgical referral letter",
+        "Recent blood work and coagulation panel",
+        "Imaging reports for the affected area",
+        "Current medication list",
+        "Fasting status (if elective procedure)",
+    ],
+    "radiology": [
+        "Aadhaar card",
+        "Doctor's referral / prescription for imaging",
+        "Previous imaging reports (for comparison)",
+        "Health insurance card",
+        "Remove all metal accessories before arriving",
+    ],
+}
+
+_GENERAL_CHECKLIST = [
+    "Aadhaar card (patient + attendant)",
+    "Health insurance / Ayushman Bharat card",
+    "Any existing medical records or prescriptions",
+    "Current medication list",
+    "Blood group information",
+    "Emergency contact details",
+]
+
+
+def _make_intake_data_url(facility, care_need):
+    """Build a data: URL containing a minimal intake-coordinator HTML page.
+    When the QR is scanned this page opens in the browser — no server needed."""
+    import urllib.parse
+    from datetime import date
+    items   = CARE_CHECKLISTS.get(care_need, _GENERAL_CHECKLIST)
+    li_html = "".join(f"<li>{it}</li>" for it in items)
+    dept    = (care_need or "General").title()
+    name    = facility.get("name", "")
+    loc     = f"{facility.get('city','')}, {facility.get('state','')}"
+    dt      = date.today().strftime("%d %b %Y")
+    html = (
+        "<!DOCTYPE html><html><head><meta charset=utf-8>"
+        "<meta name=viewport content='width=device-width,initial-scale=1'>"
+        "<title>SUVIDHA Referral</title>"
+        "<style>"
+        "body{font-family:sans-serif;padding:16px;background:#F7FAF3;"
+        "max-width:440px;margin:0 auto}"
+        ".h{background:#27500A;color:#fff;border-radius:8px;"
+        "padding:12px 16px;margin-bottom:14px}"
+        ".h h1{margin:0;font-size:15px}"
+        ".h p{margin:2px 0;font-size:11px;opacity:.8}"
+        ".lbl{font-size:10px;font-weight:700;color:#27500A;"
+        "text-transform:uppercase;letter-spacing:.5px}"
+        ".dep{font-size:18px;font-weight:700;color:#27500A;"
+        "background:#EAF3DE;border:1px solid #C0DD97;border-radius:8px;"
+        "padding:10px 14px;margin:4px 0 14px}"
+        "ul{padding-left:18px;margin:6px 0}"
+        "li{padding:5px 0;font-size:13px;border-bottom:1px solid #ddd;color:#2C2C2A}"
+        ".ft{font-size:10px;color:#888;margin-top:16px;text-align:center}"
+        "</style></head><body>"
+        f"<div class=h><h1>SUVIDHA — Incoming Referral Validation</h1>"
+        f"<p>{name}</p><p>{loc} &middot; {dt}</p></div>"
+        "<p class=lbl>Target Department</p>"
+        f"<div class=dep>{dept}</div>"
+        "<p class=lbl>Pre-Admission Requirements</p>"
+        f"<ul>{li_html}</ul>"
+        "<p class=ft>Generated by Suvidha &middot; Healthcare Referral Copilot</p>"
+        "</body></html>"
+    )
+    return "data:text/html;charset=utf-8," + urllib.parse.quote(html, safe="")
+
+
+def _make_qr_svg(text, scale=3):
+    """Generate a QR code as an inline SVG string using segno (no Pillow needed)."""
+    try:
+        import segno, io
+        qr  = segno.make(text, error="l", boost_error=False)
+        buf = io.StringIO()
+        qr.save(buf, kind="svg", scale=scale, border=2,
+                linecolor=GRN_DK, svgclass=None)
+        svg = buf.getvalue()
+        svg = svg.replace("<svg ", '<svg style="width:100%;max-width:180px;" ', 1)
+        return svg
+    except Exception as exc:
+        print(f"[QR] {exc}")
+        return (
+            f'<div style="width:160px;height:160px;background:{GRN_PALE};'
+            f'border:1px solid {BORDER_G};border-radius:8px;'
+            f'display:flex;align-items:center;justify-content:center;'
+            f'font-size:10px;color:{TXT_MUT};text-align:center;padding:12px;">QR unavailable</div>'
+        )
+
+
+def _checklist_modal_html(facility, care_need):
+    """Render the full visit-checklist modal (position:fixed overlay)."""
+    items  = CARE_CHECKLISTS.get(care_need, _GENERAL_CHECKLIST)
+    dept   = (care_need or "General").title()
+
+    data_url = _make_intake_data_url(facility, care_need)
+    qr_svg   = _make_qr_svg(data_url)
+
+    items_html = "".join(
+        f'<div style="display:flex;align-items:flex-start;gap:10px;padding:7px 0;'
+        f'border-bottom:0.5px solid {BORDER};">'
+        f'<span style="color:{GRN_MID};font-size:14px;flex-shrink:0;margin-top:1px;">&#9633;</span>'
+        f'<span style="font-size:13px;color:{TXT_PRI};">{item}</span></div>'
+        for item in items
+    )
+
+    close_js = _jclick("h-chk-close-btn")
+
+    return (
+        f'<div style="position:fixed;top:0;left:0;width:100%;height:100%;'
+        f'background:rgba(0,0,0,0.55);z-index:9000;display:flex;'
+        f'align-items:center;justify-content:center;'
+        f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">'
+        f'<div style="background:#fff;border-radius:12px;width:min(640px,95vw);'
+        f'max-height:88vh;overflow-y:auto;box-shadow:0 24px 80px rgba(0,0,0,.35);">'
+        f'<div style="background:{GRN_MID};padding:16px 20px;border-radius:12px 12px 0 0;'
+        f'display:flex;align-items:center;justify-content:space-between;">'
+        f'<div>'
+        f'<div style="font-size:15px;font-weight:700;color:#fff;">Visit Checklist</div>'
+        f'<div style="font-size:12px;color:{GRN_PALE};margin-top:2px;">'
+        f'{facility["name"]} &middot; {dept}</div>'
+        f'</div>'
+        f'<span onclick="{close_js}" style="color:#fff;font-size:22px;cursor:pointer;'
+        f'line-height:1;padding:4px 8px;border-radius:4px;">&#x2715;</span>'
+        f'</div>'
+        f'<div style="padding:20px;display:flex;gap:24px;flex-wrap:wrap;">'
+        f'<div style="flex:1;min-width:260px;">'
+        f'<div style="font-size:11px;font-weight:600;color:{TXT_MUT};text-transform:uppercase;'
+        f'letter-spacing:.5px;margin-bottom:8px;">What to bring</div>'
+        f'{items_html}'
+        f'</div>'
+        f'<div style="flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:8px;">'
+        f'<div style="font-size:11px;font-weight:600;color:{TXT_MUT};text-transform:uppercase;'
+        f'letter-spacing:.5px;">Hospital Pass (QR)</div>'
+        f'{qr_svg}'
+        f'<div style="font-size:10px;color:{TXT_MUT};text-align:center;line-height:1.4;'
+        f'max-width:170px;">Intake coordinator scans this QR to see routing &amp; requirements</div>'
+        f'</div>'
+        f'</div>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+def _compare_panel_html(compare_list):
+    """Render a side-by-side comparison table for 2-4 hospitals."""
+    if len(compare_list) < 2:
+        return ""
+
+    clear_js = _jclick("h-cmp-clear-btn")
+
+    def _row(label, vals, highlight=True):
+        unique = {str(v).lower() for v in vals}
+        cells = ""
+        for v in vals:
+            if highlight and len(unique) == 1:
+                bg = f"background:{GRN_PALE};"
+            elif highlight and len(unique) > 1:
+                bg = "background:#FAEEDA;"
+            else:
+                bg = ""
+            cells += (
+                f'<td style="padding:8px 10px;font-size:12px;color:{TXT_PRI};'
+                f'border-bottom:0.5px solid {BORDER};vertical-align:top;{bg}">{v or "&#8212;"}</td>'
+            )
+        return (
+            f'<tr>'
+            f'<td style="padding:8px 10px;font-size:11px;font-weight:600;color:{TXT_MUT};'
+            f'background:#FAFCF7;border-bottom:0.5px solid {BORDER};white-space:nowrap;'
+            f'border-right:0.5px solid {BORDER};">{label}</td>'
+            f'{cells}</tr>'
+        )
+
+    def _spec_val(c):
+        ms = [m for m in c["evidence"]["matching"]
+              if m["field"] in ("specialties", "capability")]
+        if not ms:
+            return "&#8212;"
+        raw   = ms[0].get("text", "")
+        parts = [p.strip().lower().title()
+                 for p in raw.replace(";", ",").split(",") if p.strip()][:4]
+        return ", ".join(parts) or "&#8212;"
+
+    headers = "".join(
+        f'<th style="padding:10px 12px;font-size:13px;font-weight:600;color:{GRN_DK};'
+        f'background:{GRN_PALE};border-bottom:2px solid {BORDER_G};text-align:left;">'
+        f'{c["name"][:28]}{"&#8230;" if len(c["name"])>28 else ""}</th>'
+        for c in compare_list
+    )
+
+    rows = (
+        _row("Type",        [("Government" if _is_govt(c) else "Private") for c in compare_list])
+        + _row("Distance",  [f'{c.get("distance_km","&#8212;")} km' for c in compare_list])
+        + _row("Trust",     [trust_label(c["evidence"]).split(" ", 1)[-1]
+                             if c.get("evidence") else "&#8212;" for c in compare_list])
+        + _row("Specialties", [_spec_val(c) for c in compare_list], highlight=False)
+        + _row("Phone",     [(c.get("phone") or "&#8212;")[:22] for c in compare_list])
+        + _row("City",      [f'{c.get("city","")}, {c.get("state","")}' for c in compare_list])
+    )
+
+    return (
+        f'<div style="background:{BG_CARD};border:1px solid {BORDER_G};border-radius:10px;'
+        f'margin:0 0 14px 0;overflow:hidden;'
+        f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">'
+        f'<div style="background:{GRN_PALE};padding:10px 16px;display:flex;'
+        f'align-items:center;justify-content:space-between;">'
+        f'<span style="font-size:13px;font-weight:600;color:{GRN_DK};">'
+        f'Comparing {len(compare_list)} hospitals &#x2014; '
+        f'<span style="font-size:11px;font-weight:400;color:{GRN_MID};">'
+        f'green = same &nbsp; amber = different</span></span>'
+        f'<span onclick="{clear_js}" style="font-size:11px;color:{TXT_MUT};'
+        f'cursor:pointer;text-decoration:underline;flex-shrink:0;">Clear</span></div>'
+        f'<div style="overflow-x:auto;">'
+        f'<table style="width:100%;border-collapse:collapse;">'
+        f'<thead><tr>'
+        f'<th style="padding:10px 12px;background:#F7FAF5;min-width:80px;'
+        f'border-bottom:2px solid {BORDER_G};border-right:0.5px solid {BORDER};"></th>'
+        f'{headers}</tr></thead>'
+        f'<tbody>{rows}</tbody>'
+        f'</table></div></div>'
+    )
+
+
 _JS = """
 <script>
 (function(){
@@ -497,7 +827,12 @@ def _filterbar_html(filter_val, sort_val, n_results):
                 f'border-radius:20px;padding:5px 14px;font-size:12px;cursor:pointer;'
                 f'font-family:inherit;">{txt}</button>')
 
-    new_sort = "Best match" if sort_val == "Nearest first" else "Nearest first"
+    _sort_cycle = {
+        "Evidence first": "Nearest first",
+        "Nearest first":  "Best match",
+        "Best match":     "Evidence first",
+    }
+    new_sort = _sort_cycle.get(sort_val, "Nearest first")
     sort_js = _jtap(_SA, f"'{new_sort}'", "h-sort-btn")
     sort_btn = (
         f'<button onclick="{sort_js}" '
@@ -520,7 +855,8 @@ def _filterbar_html(filter_val, sort_val, n_results):
 </div>"""
 
 
-def _card_html(rank, r, shortlist):
+def _card_html(rank, r, shortlist, compare=None):
+    compare = compare or []
     ev    = r["evidence"]
     badge = trust_label(ev)
     _, tbg, tbdr, tclr, tlbl = TRUST_CFG.get(badge, _TRUST_DEFAULT)
@@ -617,10 +953,36 @@ def _card_html(rank, r, shortlist):
         'stroke-linecap="round"><path d="m19 21-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>'
     ).replace("{fc}", GRN_MID if saved else TXT_MUT)
 
-    # Escape fid for inline JS (no quotes/backslashes expected in IDs)
+    # Escape fid for inline JS
     safe_fid = fid.replace("'", "\\'")
 
     bm_onclick = _jtap(_BA, "'" + safe_fid + "'", "h-bm-btn")
+
+    # Compare button
+    in_compare  = any(c.get("id") == fid for c in compare)
+    cmp_onclick = _jtap(_CMPA, "'" + safe_fid + "'", "h-cmp-btn")
+    cmp_ico     = "&#x229F;" if in_compare else "&#x229E;"   # ⊟ / ⊞
+    cmp_bg      = GRN_PALE   if in_compare else BG_CARD
+    cmp_bdr     = GRN_MID    if in_compare else BORDER
+
+    # Checklist button
+    chk_onclick = _jtap(_CHKA, "'" + safe_fid + "'", "h-chk-btn")
+
+    # Directions link (Google Maps, device GPS as origin)
+    lat_v, lon_v = r.get("lat"), r.get("lon")
+    if lat_v and lon_v:
+        dir_url  = f"https://www.google.com/maps/dir/?api=1&destination={lat_v},{lon_v}"
+        dir_html = (
+            f'<a href="{dir_url}" target="_blank" title="Get directions"'
+            f' style="width:30px;height:30px;border-radius:50%;border:0.5px solid {BORDER};'
+            f'background:{BG_CARD};display:inline-flex;align-items:center;'
+            f'justify-content:center;flex-shrink:0;text-decoration:none;">'
+            f'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="{TXT_SEC}"'
+            f' stroke-width="2" stroke-linecap="round">'
+            f'<polygon points="3 11 22 2 13 21 11 13 3 11"/></svg></a>'
+        )
+    else:
+        dir_html = ""
 
     sem_pill = ""
     if r.get("sem_score", 0) > 0:
@@ -680,16 +1042,36 @@ def _card_html(rank, r, shortlist):
       </div>
     </div>
     {evidence_section}
-    <!-- Footer -->
+    <!-- Footer: contact links + action buttons -->
     <div style="border-top:0.5px solid {BORDER};margin-top:10px;padding-top:8px;
                 display:flex;align-items:center;justify-content:space-between;gap:8px;">
-      <div style="display:flex;gap:14px;flex-wrap:wrap;min-width:0;">{footer_links}</div>
-      <button onclick="{bm_onclick}"
-        style="width:30px;height:30px;border-radius:50%;border:0.5px solid {bm_bdr};
-               background:{bm_bg};cursor:pointer;display:flex;align-items:center;
-               justify-content:center;flex-shrink:0;padding:0;">
-        {bm_ico}
-      </button>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;min-width:0;">{footer_links}</div>
+      <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
+        {dir_html}
+        <button onclick="{cmp_onclick}" title="{'Remove from comparison' if in_compare else 'Add to comparison'}"
+          style="width:30px;height:30px;border-radius:50%;border:0.5px solid {cmp_bdr};
+                 background:{cmp_bg};cursor:pointer;display:flex;align-items:center;
+                 justify-content:center;flex-shrink:0;padding:0;
+                 font-size:16px;color:{GRN_MID};">{cmp_ico}</button>
+        <button onclick="{chk_onclick}" title="Visit Checklist &amp; QR"
+          style="width:30px;height:30px;border-radius:50%;border:0.5px solid {BORDER};
+                 background:{BG_CARD};cursor:pointer;display:flex;align-items:center;
+                 justify-content:center;flex-shrink:0;padding:0;">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="{TXT_SEC}"
+               stroke-width="2" stroke-linecap="round">
+            <rect x="8" y="2" width="8" height="4" rx="1"/>
+            <path d="M8 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2h-2"/>
+            <line x1="12" y1="11" x2="16" y2="11"/><line x1="12" y1="15" x2="16" y2="15"/>
+            <polyline points="8 11 9 12 11 10"/><polyline points="8 15 9 16 11 14"/>
+          </svg>
+        </button>
+        <button onclick="{bm_onclick}" title="{'Remove from shortlist' if saved else 'Save to shortlist'}"
+          style="width:30px;height:30px;border-radius:50%;border:0.5px solid {bm_bdr};
+                 background:{bm_bg};cursor:pointer;display:flex;align-items:center;
+                 justify-content:center;flex-shrink:0;padding:0;">
+          {bm_ico}
+        </button>
+      </div>
     </div>
   </div>
 </div>"""
@@ -861,8 +1243,9 @@ def _suggestions_bar_html(current_query):
     )
 
 
-def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=None):
-    meta = meta or {}
+def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=None, compare=None):
+    meta    = meta    or {}
+    compare = compare or []
     n_saved = len(shortlist)
 
     # Apply filter + sort
@@ -873,8 +1256,10 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
         filtered = [r for r in filtered if not _is_govt(r)]
     if sort_val == "Best match":
         filtered.sort(key=lambda r: -r.get("blended_score", 0))
-    else:
+    elif sort_val == "Nearest first":
         filtered.sort(key=lambda r: r.get("distance_km") or 9999)
+    else:  # "Evidence first" (default)
+        filtered.sort(key=lambda r: (_trust_tier(r), r.get("distance_km") or 9999))
 
     care_need = meta.get("care_need", "") if meta else ""
     loc       = meta.get("resolved_location", "") if meta else ""
@@ -916,8 +1301,9 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             f'<b style="color:{TXT_PRI};">{int(radius or 50)} km</b> of '
             f'<b style="color:{TXT_PRI};">{loc}</b>{fuzzy}{unloc_s}</div>'
         )
-        cards = "".join(_card_html(i + 1, r, shortlist) for i, r in enumerate(filtered))
-        results_body = summary + cards
+        cards = "".join(_card_html(i + 1, r, shortlist, compare) for i, r in enumerate(filtered))
+        compare_panel = _compare_panel_html(compare) if len(compare) >= 2 else ""
+        results_body = compare_panel + summary + cards
 
     # Map
     if meta.get("search_lat"):
@@ -925,8 +1311,24 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             results, meta["search_lat"], meta["search_lon"],
             int(radius or 50), meta.get("resolved_location", query or ""),
         )
+        pharm_url  = (
+            f"https://www.google.com/maps/search/pharmacy/@"
+            f"{meta['search_lat']},{meta['search_lon']},14z"
+        )
+        pharmacy_btn = (
+            f'<a href="{pharm_url}" target="_blank" '
+            f'style="display:flex;align-items:center;justify-content:center;gap:6px;'
+            f'padding:7px 14px;font-size:12px;color:{GRN_MID};'
+            f'border-top:0.5px solid {BORDER};background:{GRN_PALE};'
+            f'text-decoration:none;flex-shrink:0;">'
+            f'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="{GRN_MID}"'
+            f' stroke-width="2" stroke-linecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5'
+            f'a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>'
+            f' Nearby pharmacies &#8599;</a>'
+        )
     else:
-        right_map = _default_map_html()
+        right_map    = _default_map_html()
+        pharmacy_btn = ""
 
     shortlist_panel = _shortlist_panel_html(shortlist)
     topbar       = _topbar_html(query, radius or 50, n_saved)
@@ -983,6 +1385,7 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
     <div class="sv-results">{results_body}</div>
     <div class="sv-right">
       <div style="flex:1;min-height:260px;overflow:hidden;">{right_map}</div>
+      {pharmacy_btn}
       {shortlist_panel}
     </div>
   </div>
@@ -1036,12 +1439,16 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     shortlist_state = gr.State([])
     meta_state      = gr.State({})
     filter_state    = gr.State("All")
-    sort_state      = gr.State("Nearest first")
+    sort_state      = gr.State(_DEFAULT_SORT)
     query_state     = gr.State("")
     radius_state    = gr.State(50)
+    compare_state   = gr.State([])   # hospitals being compared
 
     # Main visible output
-    page_html = gr.HTML(_render_page([], [], "All", "Nearest first", "", 50))
+    page_html = gr.HTML(_render_page([], [], "All", _DEFAULT_SORT, "", 50))
+
+    # Checklist modal — position:fixed overlay, empty = hidden
+    checklist_html = gr.HTML("")
 
     # ── Bridge components ─────────────────────────────────────────────────
     # All wrapped in #sv-bridge (CSS display:none) and given class sv-hide.
@@ -1054,18 +1461,24 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         h_query  = gr.Textbox(value="",              elem_id="h-query",  label="", elem_classes=_SHIDE)
         h_rad    = gr.Textbox(value="50",            elem_id="h-rad",    label="", elem_classes=_SHIDE)
         h_filter = gr.Textbox(value="All",           elem_id="h-filter", label="", elem_classes=_SHIDE)
-        h_sort   = gr.Textbox(value="Nearest first", elem_id="h-sort",   label="", elem_classes=_SHIDE)
+        h_sort   = gr.Textbox(value=_DEFAULT_SORT,    elem_id="h-sort",   label="", elem_classes=_SHIDE)
         h_bm_id  = gr.Textbox(value="",             elem_id="h-bm-id",  label="", elem_classes=_SHIDE)
         h_rm_idx = gr.Textbox(value="",             elem_id="h-rm-idx", label="", elem_classes=_SHIDE)
         # One trigger button per action — JS calls element.click() on these
-        h_search_btn    = gr.Button("", elem_id="h-search-btn",    elem_classes=_SHIDE)
-        h_filter_btn    = gr.Button("", elem_id="h-filter-btn",    elem_classes=_SHIDE)
-        h_sort_btn      = gr.Button("", elem_id="h-sort-btn",      elem_classes=_SHIDE)
-        h_bm_btn        = gr.Button("", elem_id="h-bm-btn",        elem_classes=_SHIDE)
-        h_rm_btn        = gr.Button("", elem_id="h-rm-btn",        elem_classes=_SHIDE)
-        h_clear_btn     = gr.Button("", elem_id="h-clear-btn",     elem_classes=_SHIDE)
-        h_export_btn_gr = gr.Button("", elem_id="h-export-btn-gr", elem_classes=_SHIDE)
-        h_reset_btn     = gr.Button("", elem_id="h-reset-btn",     elem_classes=_SHIDE)
+        h_cmp_id  = gr.Textbox(value="", elem_id="h-cmp-id",  label="", elem_classes=_SHIDE)
+        h_chk_id  = gr.Textbox(value="", elem_id="h-chk-id",  label="", elem_classes=_SHIDE)
+        h_search_btn     = gr.Button("", elem_id="h-search-btn",     elem_classes=_SHIDE)
+        h_filter_btn     = gr.Button("", elem_id="h-filter-btn",     elem_classes=_SHIDE)
+        h_sort_btn       = gr.Button("", elem_id="h-sort-btn",       elem_classes=_SHIDE)
+        h_bm_btn         = gr.Button("", elem_id="h-bm-btn",         elem_classes=_SHIDE)
+        h_rm_btn         = gr.Button("", elem_id="h-rm-btn",         elem_classes=_SHIDE)
+        h_clear_btn      = gr.Button("", elem_id="h-clear-btn",      elem_classes=_SHIDE)
+        h_export_btn_gr  = gr.Button("", elem_id="h-export-btn-gr",  elem_classes=_SHIDE)
+        h_reset_btn      = gr.Button("", elem_id="h-reset-btn",      elem_classes=_SHIDE)
+        h_cmp_btn        = gr.Button("", elem_id="h-cmp-btn",        elem_classes=_SHIDE)
+        h_cmp_clear_btn  = gr.Button("", elem_id="h-cmp-clear-btn",  elem_classes=_SHIDE)
+        h_chk_btn        = gr.Button("", elem_id="h-chk-btn",        elem_classes=_SHIDE)
+        h_chk_close_btn  = gr.Button("", elem_id="h-chk-close-btn",  elem_classes=_SHIDE)
 
     export_file = gr.File(label="Download shortlist", visible=False)
 
@@ -1078,18 +1491,18 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         query = (query or "").strip()
         if not _data_ready:
             m = {"error": _STARTUP_ERROR or "Data still loading — please try again."}
-            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m),
-                    [], m, query, radius)
+            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m, []),
+                    [], m, query, radius, [])
         if not query:
             m = {"error": "Enter something like 'dialysis near Jaipur'."}
-            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m),
-                    [], m, query, radius)
+            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m, []),
+                    [], m, query, radius, [])
 
         care_need, location = parse_combined_query(query, centroids)
         if not location:
             m = {"error": f"Couldn't find a location in '{query}'. Try 'dialysis near Jaipur'."}
-            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m),
-                    [], m, query, radius)
+            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m, []),
+                    [], m, query, radius, [])
         if not care_need:
             care_need = query
 
@@ -1098,45 +1511,45 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             care_need_query=care_need, location_query=location,
             radius_km=radius,
         )
-        html = _render_page(results, shortlist, filter_val, sort_val, query, radius, meta)
-        return html, results, meta, query, radius
+        html = _render_page(results, shortlist, filter_val, sort_val, query, radius, meta, [])
+        return html, results, meta, query, radius, []
 
     h_search_btn.click(
         _do_search,
         [h_query, h_rad, shortlist_state, filter_state, sort_state],
-        [page_html, results_state, meta_state, query_state, radius_state],
+        [page_html, results_state, meta_state, query_state, radius_state, compare_state],
         api_name=_AN,
     )
 
     # ── Filter ────────────────────────────────────────────────────────────
-    def _do_filter(fv, results, shortlist, sort_val, query, radius, meta):
-        return _render_page(results, shortlist, fv, sort_val, query, radius, meta), fv
+    def _do_filter(fv, results, shortlist, sort_val, query, radius, meta, compare):
+        return _render_page(results, shortlist, fv, sort_val, query, radius, meta, compare), fv
 
     h_filter_btn.click(
         _do_filter,
         [h_filter, results_state, shortlist_state, sort_state,
-         query_state, radius_state, meta_state],
+         query_state, radius_state, meta_state, compare_state],
         [page_html, filter_state], api_name=_AN,
     )
 
     # ── Sort ──────────────────────────────────────────────────────────────
-    def _do_sort(sv, results, shortlist, filter_val, query, radius, meta):
-        return _render_page(results, shortlist, filter_val, sv, query, radius, meta), sv
+    def _do_sort(sv, results, shortlist, filter_val, query, radius, meta, compare):
+        return _render_page(results, shortlist, filter_val, sv, query, radius, meta, compare), sv
 
     h_sort_btn.click(
         _do_sort,
         [h_sort, results_state, shortlist_state, filter_state,
-         query_state, radius_state, meta_state],
+         query_state, radius_state, meta_state, compare_state],
         [page_html, sort_state], api_name=_AN,
     )
 
     # ── Bookmark ──────────────────────────────────────────────────────────
-    def _do_bookmark(bm_id, results, shortlist, filter_val, sort_val, query, radius, meta):
+    def _do_bookmark(bm_id, results, shortlist, filter_val, sort_val, query, radius, meta, compare):
         if not bm_id or not results:
-            return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
+            return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta, compare), shortlist
         candidate = next((r for r in results if _s(r.get("id", r["name"])) == bm_id), None)
         if candidate is None:
-            return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
+            return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta, compare), shortlist
         fid = _s(candidate.get("id", candidate["name"]))
         if any(s.get("id") == fid for s in shortlist):
             shortlist = [s for s in shortlist if s.get("id") != fid]
@@ -1156,38 +1569,38 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 )
             except Exception:
                 pass
-        return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
+        return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta, compare), shortlist
 
     h_bm_btn.click(
         _do_bookmark,
         [h_bm_id, results_state, shortlist_state, filter_state, sort_state,
-         query_state, radius_state, meta_state],
+         query_state, radius_state, meta_state, compare_state],
         [page_html, shortlist_state], api_name=_AN,
     )
 
     # ── Remove from shortlist ─────────────────────────────────────────────
-    def _do_remove(rm_idx, results, shortlist, filter_val, sort_val, query, radius, meta):
+    def _do_remove(rm_idx, results, shortlist, filter_val, sort_val, query, radius, meta, compare):
         try:
             shortlist = [s for i, s in enumerate(shortlist) if i != int(rm_idx)]
         except (ValueError, TypeError):
             pass
-        return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
+        return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta, compare), shortlist
 
     h_rm_btn.click(
         _do_remove,
         [h_rm_idx, results_state, shortlist_state, filter_state, sort_state,
-         query_state, radius_state, meta_state],
+         query_state, radius_state, meta_state, compare_state],
         [page_html, shortlist_state], api_name=_AN,
     )
 
     # ── Clear shortlist ───────────────────────────────────────────────────
-    def _do_clear(results, shortlist, filter_val, sort_val, query, radius, meta):
-        return _render_page(results, [], filter_val, sort_val, query, radius, meta), []
+    def _do_clear(results, shortlist, filter_val, sort_val, query, radius, meta, compare):
+        return _render_page(results, [], filter_val, sort_val, query, radius, meta, compare), []
 
     h_clear_btn.click(
         _do_clear,
         [results_state, shortlist_state, filter_state, sort_state,
-         query_state, radius_state, meta_state],
+         query_state, radius_state, meta_state, compare_state],
         [page_html, shortlist_state], api_name=_AN,
     )
 
@@ -1202,15 +1615,66 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
 
     # ── Reset (logo / app-name click) ─────────────────────────────────────
     def _do_reset():
-        html = _render_page([], [], "All", "Nearest first", "", 50)
-        return html, [], [], {}, "All", "Nearest first", "", 50
+        html = _render_page([], [], "All", _DEFAULT_SORT, "", 50, compare=[])
+        return html, [], [], {}, "All", _DEFAULT_SORT, "", 50, []
 
     h_reset_btn.click(
         _do_reset,
         inputs=[],
         outputs=[page_html, results_state, shortlist_state, meta_state,
-                 filter_state, sort_state, query_state, radius_state],
+                 filter_state, sort_state, query_state, radius_state, compare_state],
         api_name=_AN,
+    )
+
+    # ── Compare toggle ────────────────────────────────────────────────────
+    def _do_compare(cmp_id, results, shortlist, compare, filter_val, sort_val, query, radius, meta):
+        compare = compare or []
+        fac = next((r for r in results if _s(r.get("id", r["name"])) == cmp_id), None)
+        if fac is None:
+            return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta, compare), compare
+        fid = _s(fac.get("id", fac["name"]))
+        if any(c.get("id") == fid for c in compare):
+            compare = [c for c in compare if c.get("id") != fid]
+        elif len(compare) < 4:
+            compare = compare + [fac]
+        return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta, compare), compare
+
+    h_cmp_btn.click(
+        _do_compare,
+        [h_cmp_id, results_state, shortlist_state, compare_state, filter_state,
+         sort_state, query_state, radius_state, meta_state],
+        [page_html, compare_state], api_name=_AN,
+    )
+
+    def _do_cmp_clear(results, shortlist, filter_val, sort_val, query, radius, meta):
+        return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta, []), []
+
+    h_cmp_clear_btn.click(
+        _do_cmp_clear,
+        [results_state, shortlist_state, filter_state, sort_state,
+         query_state, radius_state, meta_state],
+        [page_html, compare_state], api_name=_AN,
+    )
+
+    # ── Checklist / QR modal ──────────────────────────────────────────────
+    def _do_chk_open(chk_id, results, meta):
+        fac = next((r for r in (results or []) if _s(r.get("id", r["name"])) == chk_id), None)
+        if not fac:
+            return ""
+        care_need = (meta or {}).get("care_need", "")
+        return _checklist_modal_html(fac, care_need)
+
+    h_chk_btn.click(
+        _do_chk_open,
+        [h_chk_id, results_state, meta_state],
+        [checklist_html], api_name=_AN,
+    )
+
+    def _do_chk_close():
+        return ""
+
+    h_chk_close_btn.click(
+        _do_chk_close, [], [checklist_html], api_name=_AN,
     )
 
 

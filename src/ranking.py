@@ -9,6 +9,14 @@ from .evidence import evaluate_evidence
 
 _SEPARATOR_WORDS = re.compile(r"\b(?:near|in|around|close to|nearby|at)\b", re.IGNORECASE)
 
+# Conversational preambles to strip before parsing ("show me X near Y" → "X near Y")
+_PREAMBLES = re.compile(
+    r"^(?:show\s+me|find\s+me|find|search\s+for|search|look\s+for|get\s+me|"
+    r"give\s+me|can\s+you\s+find|please\s+find|i\s+need|i\s+want|"
+    r"help\s+me\s+find|help\s+me|locate|discover|list|display)\s+",
+    re.IGNORECASE,
+)
+
 _LLM_PROMPT = """\
 Extract the medical care need and the Indian city or location from the user query.
 Return ONLY a JSON object with two keys: "care_need" and "location".
@@ -69,6 +77,11 @@ def parse_combined_query(text, centroids):
     Returns ("", "") if nothing usable could be extracted.
     """
     text = text.strip()
+    if not text:
+        return "", ""
+
+    # Strip conversational preambles ("show me X near Y" → "X near Y")
+    text = _PREAMBLES.sub("", text).strip()
     if not text:
         return "", ""
 
