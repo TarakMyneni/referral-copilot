@@ -99,11 +99,17 @@ def run(df: pd.DataFrame, centroids: dict,
     results : list[dict]   ranked facilities, located first then unlocated
     meta    : dict         search metadata (or {"error": ...} on failure)
     """
-    if not care_need_query.strip() or not location_query.strip():
-        return [], {"error": "Please enter both a care need and a location."}
+    if not location_query.strip():
+        return [], {"error": "Please enter a location."}
+
+    # show_all mode: no specific care need — return all clinical facilities within radius
+    show_all = not care_need_query.strip()
 
     # ── Parse care need ───────────────────────────────────────────────────────
-    need_key, keywords = normalize_care_need(care_need_query)
+    if show_all:
+        need_key, keywords = "", []
+    else:
+        need_key, keywords = normalize_care_need(care_need_query)
 
     # ── Tool 1: location (deterministic) ─────────────────────────────────────
     lat, lon, matched_city, match_type = resolve_location(location_query, centroids)
@@ -116,14 +122,15 @@ def run(df: pd.DataFrame, centroids: dict,
         }
 
     # ── Tool 2: RAG (semantic over unstructured text) ─────────────────────────
-    # Build a rich query: canonical keywords + raw user phrasing
-    rag_query = f"{care_need_query} {' '.join(keywords[:6])}"
-    raw_sem_scores = rag_tool.semantic_search(rag_query, top_k=300)
-    semantic_active = len(raw_sem_scores) > 0
-
-    # Normalise to [0, 1]
-    max_sem = max(raw_sem_scores.values(), default=1.0) or 1.0
-    sem_scores = {fid: s / max_sem for fid, s in raw_sem_scores.items()}
+    if show_all:
+        sem_scores       = {}
+        semantic_active  = False
+    else:
+        rag_query = f"{care_need_query} {' '.join(keywords[:6])}"
+        raw_sem_scores = rag_tool.semantic_search(rag_query, top_k=300)
+        semantic_active = len(raw_sem_scores) > 0
+        max_sem = max(raw_sem_scores.values(), default=1.0) or 1.0
+        sem_scores = {fid: s / max_sem for fid, s in raw_sem_scores.items()}
 
     # ── Tool 3: feedback boost ────────────────────────────────────────────────
     boost_scores = feedback_tool.get_all_boosts(need_key)
@@ -146,24 +153,30 @@ def run(df: pd.DataFrame, centroids: dict,
         facility_id = str(row.get(id_col, "") or "")
 
         # ── Relevance signals ─────────────────────────────────────────────
-        kw_score  = match_score(row, keywords)                     # 0-5 int
-        sem_score = sem_scores.get(facility_id, 0.0)              # 0-1 float
         fb_raw    = boost_scores.get(facility_id, 0)
         fb_score  = min(fb_raw, FEEDBACK_CAP) / FEEDBACK_CAP      # 0-1 float
 
-        # Require at least one relevance signal; skip very low semantic hits
-        if kw_score == 0 and sem_score < SEM_FLOOR:
-            continue
+        if show_all:
+            # No specialty filter — accept any clinical facility; skip labs
+            kw_score  = 0
+            sem_score = 0.0
+            facility_name = str(row.get(COLUMNS["name"], "") or "")
+            facility_org  = str(row.get(COLUMNS.get("org_type", "organization_type"), "") or "")
+            if _is_lab_facility(facility_name, facility_org):
+                continue
+        else:
+            kw_score  = match_score(row, keywords)                 # 0-5 int
+            sem_score = sem_scores.get(facility_id, 0.0)          # 0-1 float
 
-        # Exclude diagnostic labs / collection centres from clinical queries.
-        # Labs match because they list tests for the same conditions (e.g.
-        # "prenatal screening" for a maternity search), but they are not
-        # treatment facilities. Skip them unless the user is explicitly
-        # asking for diagnostics/imaging/radiology.
-        facility_name = str(row.get(COLUMNS["name"], "") or "")
-        facility_org  = str(row.get(COLUMNS.get("org_type", "organization_type"), "") or "")
-        if need_key not in _DIAGNOSTIC_NEEDS and _is_lab_facility(facility_name, facility_org):
-            continue
+            # Require at least one relevance signal; skip very low semantic hits
+            if kw_score == 0 and sem_score < SEM_FLOOR:
+                continue
+
+            # Exclude diagnostic labs from clinical searches
+            facility_name = str(row.get(COLUMNS["name"], "") or "")
+            facility_org  = str(row.get(COLUMNS.get("org_type", "organization_type"), "") or "")
+            if need_key not in _DIAGNOSTIC_NEEDS and _is_lab_facility(facility_name, facility_org):
+                continue
 
         blended = kw_score + SEMANTIC_W * sem_score + FEEDBACK_W * fb_score
 

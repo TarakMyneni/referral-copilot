@@ -674,7 +674,8 @@ Always map symptoms to the right specialty for care_need. Use these as a guide:
                                                  then route to the right specialty or "general medicine"
 
 ━━━ IMPORTANT RULES ━━━
-- "hospitals near X" / "best hospitals" / "clinic near X" alone are NOT care needs — ask what condition.
+- "hospitals near X" / "clinic near X" / "healthcare near X" — set care_need="" (empty) and search; do NOT ask for a condition.
+- Only ask for a condition when the user's message has NO location either (truly nothing to go on).
 - Neighborhoods like "Hebbal Bangalore" → extract main city (Bangalore).
 - "within X km of Y" / "near Y" / "in Y" / "around Y" — Y is the location.
 - org_type: "government" for govt/sarkari/public/sarkar, "private" for private, "" otherwise.
@@ -691,7 +692,8 @@ Always map symptoms to the right specialty for care_need. Use these as a guide:
   user: "headache for 2 days, i am in pune" → {"action":"search","care_need":"general medicine","location":"pune","org_type":""}
   user: "severe headache suddenly near mumbai" → {"action":"search","care_need":"neurology","location":"mumbai","org_type":""}
   user: "govt hospitals for dialysis Jaipur" → {"action":"search","care_need":"dialysis","location":"Jaipur","org_type":"government"}
-  user: "hospitals near Pune"             → ask "What's the health concern? For example: fever, dialysis, maternity, eye care…"
+  user: "hospitals near Pune"             → {"action":"search","care_need":"","location":"Pune","org_type":""}
+  user: "clinics in Chennai"             → {"action":"search","care_need":"","location":"Chennai","org_type":""}
   user: "I have chest pain near Nagpur"   → {"action":"search","care_need":"cardiology","location":"nagpur","org_type":""}
   [history has Delhi search] user: "now check Shimla for maternity" → {"action":"search","care_need":"maternity","location":"Shimla","org_type":""}
   [history has Mumbai search] user: "what about dialysis in Chennai?" → {"action":"search","care_need":"dialysis","location":"Chennai","org_type":""}
@@ -1954,39 +1956,42 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         # LLM unavailable — fall back to direct parse and run search
         if response is None:
             care_need, location, org_type_hint = parse_combined_query(query, centroids)
-            # Fill gaps from the previous search so context carries over even without LLM
-            prev_loc  = (cur_meta or {}).get("resolved_location", "")
-            prev_need = (cur_meta or {}).get("care_need", "")
-            if not location and prev_loc:
-                location = prev_loc
-            if not care_need and prev_need:
-                care_need = prev_need
-            valid_care = care_need and care_need.lower().strip() not in _GENERIC_CARE
-            if valid_care and location:
+            # Fill gaps from previous search (no LLM context, so carry both)
+            if not location:
+                location = (cur_meta or {}).get("resolved_location", "")
+            if not care_need:
+                care_need = (cur_meta or {}).get("care_need", "")
+            if care_need.lower().strip() in _GENERIC_CARE:
+                care_need = ""
+            if location:
+                if not care_need and not _rm:
+                    radius = 25  # default for "show all hospitals"
                 results, meta, eff_filt, radius = _run_search(care_need, location, org_type_hint, radius, filter_val)
                 n   = meta.get("total_matches", len(results))
                 loc = meta.get("resolved_location", location)
                 err = meta.get("error", "")
                 if n:
                     fac_word = "facility" if n == 1 else "facilities"
-                    ai_msg = (f"Found <b>{n}</b> {care_need.title()} {fac_word} near <b>{loc.title()}</b>! "
-                              f"Say \"show only government\" or \"show only private\" to filter.")
+                    if care_need:
+                        ai_msg = (f"Found <b>{n}</b> {care_need.title()} {fac_word} near <b>{loc.title()}</b>! "
+                                  f"Say \"show only government\" or \"show only private\" to filter.")
+                    else:
+                        ai_msg = (f"Found <b>{n}</b> {fac_word} within <b>{radius} km</b> of <b>{loc.title()}</b>. "
+                                  f"Ask for a specific care (e.g. maternity, dialysis) to narrow down.")
                 elif err and "resolve" in err.lower():
                     ai_msg = f"Hmm, I couldn't find <b>{location.title()}</b> on the map. Try a nearby bigger city?"
                 else:
-                    ai_msg = (f"I looked up to <b>{radius} km</b> around <b>{loc.title()}</b> "
-                              f"but didn't find {care_need} facilities. Want to try a nearby city?")
+                    ai_msg = (f"I looked within <b>{radius} km</b> of <b>{loc.title()}</b> "
+                              f"but didn't find any hospitals there. Want to try a nearby city?")
                 chat_history = chat_history + [(query, ai_msg)]
                 meta["chat_history"] = chat_history
-                search_q = f"{care_need} near {location}"
+                search_q = f"{care_need} near {location}" if care_need else f"hospitals near {location}"
                 html = _render_page(results, shortlist, eff_filt, sort_val, search_q, radius, meta, [])
                 return html, results, meta, "", radius, [], eff_filt
-            if location and not valid_care:
-                ai_msg = f"Sure! What kind of medical care do you need near <b>{location.title()}</b>? For example: dialysis, eye care, maternity, cardiology…"
-            elif care_need and not location:
+            if care_need:
                 ai_msg = f"Got it — <b>{care_need}</b>. Which city or area are you near?"
             else:
-                ai_msg = "Happy to help! Just tell me what care you need and which city — e.g. <i>dialysis near Jaipur</i> or <i>eye care in Chennai</i>."
+                ai_msg = "Happy to help! Just tell me which city — e.g. <i>hospitals near Jaipur</i> or <i>dialysis near Chennai</i>."
             chat_history = chat_history + [(query, ai_msg)]
             m = dict(cur_meta or {})
             m["chat_history"] = chat_history
@@ -1999,21 +2004,22 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 care_need     = (action.get("care_need",  "") or "").strip()
                 location      = (action.get("location",   "") or "").strip()
                 org_type_hint = (action.get("org_type",   "") or "").strip().lower()
-                # Reject generic care terms — they match too many facilities
+                # Reject generic care terms — treat them as "show all hospitals"
                 if care_need.lower() in _GENERIC_CARE:
                     care_need = ""
-                # Fill gaps from previous search if LLM omitted them
+                # Fill location gap only — trust LLM to carry care_need via history
                 if not location:
                     location = (cur_meta or {}).get("resolved_location", "")
-                if not care_need:
-                    care_need = (cur_meta or {}).get("care_need", "")
-                if not care_need or not location:
-                    if not care_need:
-                        ai_msg = f"What kind of medical care are you looking for near <b>{location.title()}</b>? (e.g. dialysis, eye care, maternity, cardiology)"
-                    else:
+                if not location:
+                    ai_msg = f"Which city are you near? I'll find hospitals there."
+                    if care_need:
                         ai_msg = f"Which city are you near? I'll look for <b>{care_need}</b> facilities there."
                     chat_history = chat_history + [(query, ai_msg)]
                     return _ret(cur_results or [], cur_meta or {}, filter_val, query, radius, cur_compare or [])
+
+                # Default to 25 km for "all hospitals" searches when user didn't specify a radius
+                if not care_need and not _rm:
+                    radius = 25
 
                 results, meta, eff_filt, radius = _run_search(care_need, location, org_type_hint, radius, filter_val)
                 n   = meta.get("total_matches", len(results))
@@ -2021,24 +2027,37 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 err = meta.get("error", "")
                 if n:
                     fac_word = "facility" if n == 1 else "facilities"
-                    ai_msg = (
-                        f"Found <b>{n}</b> {care_need.title()} {fac_word} near <b>{loc.title()}</b>! "
-                        f"You can say \"show only government\" or \"show only private\" to filter, or ask about a different care."
-                    )
+                    if care_need:
+                        ai_msg = (
+                            f"Found <b>{n}</b> {care_need.title()} {fac_word} near <b>{loc.title()}</b>! "
+                            f"You can say \"show only government\" or \"show only private\" to filter, or ask about a different care."
+                        )
+                    else:
+                        ai_msg = (
+                            f"Found <b>{n}</b> {fac_word} within <b>{radius} km</b> of <b>{loc.title()}</b>. "
+                            f"You can ask for a specific care (e.g. maternity, dialysis) or say \"show only government\" to filter."
+                        )
                 elif err and "resolve" in err.lower():
                     ai_msg = (
                         f"Hmm, I couldn't find <b>{location.title()}</b> on the map. "
                         f"Could you try a nearby bigger city or district name?"
                     )
                 else:
-                    ai_msg = (
-                        f"I looked up to <b>{radius} km</b> around <b>{loc.title()}</b> "
-                        f"but didn't find {care_need} facilities there. "
-                        f"Want to try a nearby bigger city, or a different type of care?"
-                    )
+                    if care_need:
+                        ai_msg = (
+                            f"I looked up to <b>{radius} km</b> around <b>{loc.title()}</b> "
+                            f"but didn't find {care_need} facilities there. "
+                            f"Want to try a nearby bigger city, or a different type of care?"
+                        )
+                    else:
+                        ai_msg = (
+                            f"I looked within <b>{radius} km</b> of <b>{loc.title()}</b> "
+                            f"but didn't find any hospitals there. "
+                            f"Want to try a nearby bigger city?"
+                        )
                 chat_history = chat_history + [(query, ai_msg)]
                 meta["chat_history"] = chat_history
-                search_q = f"{care_need} near {location}"
+                search_q = f"{care_need} near {location}" if care_need else f"hospitals near {location}"
                 html = _render_page(results, shortlist, eff_filt, sort_val, search_q, radius, meta, [])
                 return html, results, meta, "", radius, [], eff_filt
 
