@@ -11,7 +11,7 @@ import gradio as gr
 import pandas as pd
 
 from src.config import COLUMNS
-from src.geo import resolve_location, build_postcode_centroids
+from src.geo import resolve_location, build_postcode_centroids, preload_nominatim_cache, set_geo_save_callback
 from src.ranking import parse_combined_query, _LLM_MODEL
 from src.evidence import evaluate_evidence, trust_label
 from src import agent as supervisor
@@ -23,6 +23,7 @@ from src import feedback as feedback_store
 
 SILVER_TABLE    = "mediguide.referral_copilot.facilities_silver"
 CENTROIDS_TABLE = "mediguide.referral_copilot.location_centroids"
+GEO_CACHE_TABLE = "mediguide.referral_copilot.geo_cache"
 
 _BASE    = os.path.dirname(os.path.abspath(__file__))
 _NEEDED  = set(COLUMNS.values())
@@ -155,6 +156,41 @@ def _load_facilities_csv():
             _df[col] = pd.to_numeric(_df[col], errors="coerce")
     return _df
 
+def _load_geo_cache():
+    """Load Nominatim cache from Delta into memory so cold starts are fast."""
+    try:
+        _sdk_query(f"""
+            CREATE TABLE IF NOT EXISTS {GEO_CACHE_TABLE} (
+                query_lower STRING,
+                lat         DOUBLE,
+                lon         DOUBLE
+            )
+        """)
+        cols, rows = _sdk_query(f"SELECT query_lower, lat, lon FROM {GEO_CACHE_TABLE}")
+        entries = [(r[0], r[1], r[2]) for r in rows if r[1] is not None and r[2] is not None]
+        preload_nominatim_cache(entries)
+        print(f"[App] Geo cache loaded: {len(entries)} cities pre-cached")
+    except Exception as e:
+        print(f"[App] Geo cache skipped: {e}")
+
+
+def _save_geo_cache_entry(query_lower, lat, lon):
+    """Write a new Nominatim result to Delta in a background thread."""
+    def _write():
+        try:
+            q = query_lower.replace("'", "''")
+            _sdk_query(f"""
+                INSERT INTO {GEO_CACHE_TABLE} (query_lower, lat, lon)
+                SELECT '{q}', {lat}, {lon}
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM {GEO_CACHE_TABLE} WHERE query_lower = '{q}'
+                )
+            """)
+        except Exception as e:
+            print(f"[App] Geo cache write failed: {e}")
+    threading.Thread(target=_write, daemon=True).start()
+
+
 def _load_centroids_csv():
     df_c = pd.read_csv(_CENTROIDS_CSV, dtype=str)
     df_c["lat"] = pd.to_numeric(df_c["lat"], errors="coerce")
@@ -193,6 +229,8 @@ def _background_load():
             feedback_store.load(_sdk_query)
         except Exception as fe:
             print(f"[App] Feedback skipped: {fe}")
+        _load_geo_cache()
+        set_geo_save_callback(_save_geo_cache_entry)
         # Enrich centroids with PIN codes derived from facilities coordinates.
         # Uses the dataset itself — no external postcode directory needed.
         try:
@@ -1828,6 +1866,10 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         except (ValueError, TypeError):
             radius = 5
         query = (query or "").strip()
+        # Override radius if the user mentioned a distance in their message
+        _rm = re.search(r'\b(\d+)\s*(?:km|kms|kilometer|kilometre)s?\b', query, re.IGNORECASE)
+        if _rm:
+            radius = max(5, min(500, int(_rm.group(1))))
 
         # Retrieve chat history stored in current meta
         chat_history = (cur_meta or {}).get("chat_history", [])

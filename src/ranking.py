@@ -227,7 +227,7 @@ def search_facilities(df, location_query, care_need_query, centroids,
     geo_source_col = COLUMNS["geo_source"]
     city_col       = COLUMNS["city"]
     state_col      = COLUMNS["state"]
-    loc_lower      = location_query.strip().lower()
+    loc_lower      = matched_city.lower() if matched_city else location_query.strip().lower()
 
     located   = []
     unlocated = []

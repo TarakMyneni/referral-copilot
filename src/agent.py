@@ -130,7 +130,9 @@ def run(df: pd.DataFrame, centroids: dict,
     geo_source_col = COLUMNS["geo_source"]
     city_col       = COLUMNS["city"]
     state_col      = COLUMNS["state"]
-    loc_lower      = location_query.strip().lower()
+    # Use the resolved canonical city name (e.g. "mumbai" when user typed "bombay")
+    # so that unlocated facilities whose city="mumbai" are matched correctly.
+    loc_lower      = matched_city.lower() if matched_city else location_query.strip().lower()
 
     located   = []   # have usable coords, within radius
     unlocated = []   # geo_source=UNKNOWN but city/state matches

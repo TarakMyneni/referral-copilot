@@ -16,6 +16,21 @@ _ADMIN_SUFFIX = re.compile(
 # In-process cache so repeated searches for the same city don't hit Nominatim twice.
 _nominatim_cache: dict = {}
 
+# Optional callback set by app.py to persist new Nominatim results to Delta.
+_geo_db_save_callback = None
+
+
+def set_geo_save_callback(fn):
+    """Register fn(query_lower, lat, lon) to persist new Nominatim hits to DB."""
+    global _geo_db_save_callback
+    _geo_db_save_callback = fn
+
+
+def preload_nominatim_cache(entries):
+    """Pre-populate in-process cache from DB: entries = [(query_lower, lat, lon), ...]"""
+    for q, lat, lon in entries:
+        _nominatim_cache[(q, False)] = (float(lat), float(lon))
+
 
 def _nominatim_lookup(raw_query: str, is_pin: bool = False):
     """
@@ -59,6 +74,11 @@ def _nominatim_lookup(raw_query: str, is_pin: bool = False):
         print(f"[Geo] Nominatim failed for '{raw_query}': {exc}")
 
     _nominatim_cache[cache_key] = result
+    if result and not is_pin and _geo_db_save_callback:
+        try:
+            _geo_db_save_callback(raw_query.lower(), result[0], result[1])
+        except Exception:
+            pass
     return result
 
 
@@ -135,6 +155,22 @@ def build_pincode_centroids(pincode_df):
     return result
 
 
+def _nearest_centroid(lat, lon, city_centroids, max_km=100):
+    """
+    Return the centroid key in city_centroids nearest to (lat, lon).
+    Returns None if no centroid is within max_km.
+    PIN-code-only keys (pure digits) are excluded.
+    """
+    best_key, best_dist = None, float("inf")
+    for k, c in city_centroids.items():
+        if k.isdigit():
+            continue
+        d = haversine_km(lat, lon, c["lat"], c["lon"])
+        if d < best_dist:
+            best_dist, best_key = d, k
+    return best_key if best_dist <= max_km else None
+
+
 def resolve_location(query_location, centroids):
     """
     Return (lat, lon, matched_name, match_type).
@@ -142,11 +178,13 @@ def resolve_location(query_location, centroids):
 
     Resolution order:
       0. 6-digit PIN code — exact hit in facility centroids, else Nominatim postalcode
-      1. Exact lowercase name match in centroids
-      2. Substring match (city names only, both directions, min-length guard)
-      3. Admin-suffix stripped version of steps 1-2
-      4. Nominatim geocoding — proper geocoder, handles any Indian city/town/village
-      5. Edit-distance fuzzy (cutoff 0.82, last resort for typos)
+      1. Nominatim geocoding — primary, handles old names / alternate spellings.
+         After resolving coordinates, nearest-centroid lookup gives the canonical
+         city name used in the dataset (e.g. "bombay" → Mumbai coords → "mumbai").
+      2. Exact lowercase name match in centroids   ┐ fallback when
+      3. Substring match (both directions, guarded) ┤ Nominatim is
+      4. Admin-suffix stripped versions of 2-3      ┘ unavailable
+      5. Edit-distance fuzzy (cutoff 0.82, typo correction only)
     """
     raw = query_location.strip()
     key = raw.lower()
@@ -156,7 +194,6 @@ def resolve_location(query_location, centroids):
         if key in centroids:
             c = centroids[key]
             return c["lat"], c["lon"], key, "exact"
-        # Nominatim knows every Indian PIN code
         coords = _nominatim_lookup(key, is_pin=True)
         if coords:
             return coords[0], coords[1], key, "exact"
@@ -165,17 +202,26 @@ def resolve_location(query_location, centroids):
     # City names only (exclude PIN-code keys which are pure digits)
     city_centroids = {k: v for k, v in centroids.items() if not k.isdigit()}
 
+    # --- 1. Nominatim (primary) ---
+    # Handles old names (Bombay→Mumbai, Calcutta→Kolkata), neighborhoods,
+    # districts, and any Indian place not in the facility dataset.
+    # Results are cached in-process and persisted to Delta between restarts.
+    coords = _nominatim_lookup(raw)
+    if coords:
+        # Nearest centroid gives the canonical city name from our dataset.
+        canonical = _nearest_centroid(coords[0], coords[1], city_centroids)
+        matched_name = canonical if canonical else key
+        print(f"[Geo] Nominatim: '{raw}' → {coords} → canonical='{matched_name}'")
+        return coords[0], coords[1], matched_name, "fuzzy"
+
+    # --- Fallback: centroid-based lookup (Nominatim unavailable) ---
+
     def _lookup(k):
         """Exact → guarded substring for a given lowercase key."""
         if not k:
             return None, None
-
-        # exact
         if k in city_centroids:
             return k, "exact"
-
-        # substring — require the shorter string to cover ≥60 % of the longer one
-        # to prevent short centroid keys ("ab", "ali") from matching unrelated queries.
         candidates = []
         for c in city_centroids:
             longer, shorter = (k, c) if len(k) >= len(c) else (c, k)
@@ -183,16 +229,15 @@ def resolve_location(query_location, centroids):
                 candidates.append(c)
         if candidates:
             return min(candidates, key=len), "fuzzy"
-
         return None, None
 
-    # 1-2. Try full key
+    # 2-3. Try full key
     matched, mtype = _lookup(key)
     if matched:
         c = city_centroids[matched]
         return c["lat"], c["lon"], matched, mtype
 
-    # 3. Strip admin suffix and retry
+    # 4. Strip admin suffix and retry
     stripped = _ADMIN_SUFFIX.sub("", key).strip()
     if stripped and stripped != key:
         matched, mtype = _lookup(stripped)
@@ -200,11 +245,6 @@ def resolve_location(query_location, centroids):
             c = city_centroids[matched]
             print(f"[Geo] Suffix-stripped '{raw}' → '{matched}'")
             return c["lat"], c["lon"], matched, mtype
-
-    # 4. Nominatim — authoritative geocoder, handles cities not in the facility dataset
-    coords = _nominatim_lookup(raw)
-    if coords:
-        return coords[0], coords[1], raw.lower(), "fuzzy"
 
     # 5. Edit-distance fuzzy — typo correction only, high cutoff to avoid wrong cities
     close = difflib.get_close_matches(key, city_centroids.keys(), n=1, cutoff=0.82)
