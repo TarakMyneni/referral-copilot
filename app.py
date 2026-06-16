@@ -260,6 +260,14 @@ def _jclick(btn_id):
     bsel = f"#{btn_id} button,button#{btn_id}"
     return f"(function(){{var b=document.querySelector('{bsel}');if(b)b.click();}})();"
 
+# Confirm-and-reset JS — used on logo/app-name click
+_RESET_JS = (
+    "if(confirm('Clear all results and saved facilities and start fresh?')){"
+    "var inp=document.getElementById('vi-query');if(inp)inp.value='';"
+    "var b=document.querySelector('#h-reset-btn button,button#h-reset-btn');"
+    "if(b)b.click();}"
+)
+
 # Inline search action — reads from the visible vi-query / vi-radius inputs,
 # sets the hidden bridge textboxes, then clicks the hidden search button.
 _JS_SEARCH_INLINE = (
@@ -382,7 +390,9 @@ def _topbar_html(query, radius, n_saved):
 <div style="background:#fff;border-bottom:1px solid {BORDER};padding:10px 20px;
             display:flex;align-items:center;gap:16px;flex-shrink:0;
             font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-  <div class="sv-topbar-logo" style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+  <div class="sv-topbar-logo" onclick="{_RESET_JS}"
+       style="display:flex;align-items:center;gap:10px;flex-shrink:0;cursor:pointer;"
+       title="Click to reset">
     {logo}
     <span style="font-size:22px;font-weight:700;color:{GRN_DK};letter-spacing:-0.3px;">SUVIDHA</span>
   </div>
@@ -984,6 +994,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         h_rm_btn        = gr.Button("", elem_id="h-rm-btn",        elem_classes=_SHIDE)
         h_clear_btn     = gr.Button("", elem_id="h-clear-btn",     elem_classes=_SHIDE)
         h_export_btn_gr = gr.Button("", elem_id="h-export-btn-gr", elem_classes=_SHIDE)
+        h_reset_btn     = gr.Button("", elem_id="h-reset-btn",     elem_classes=_SHIDE)
 
     export_file = gr.File(label="Download shortlist", visible=False)
 
@@ -1117,6 +1128,19 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         return gr.update(value=path, visible=True)
 
     h_export_btn_gr.click(_do_export, [shortlist_state], [export_file], api_name=_AN)
+
+    # ── Reset (logo / app-name click) ─────────────────────────────────────
+    def _do_reset():
+        html = _render_page([], [], "All", "Nearest first", "", 50)
+        return html, [], [], {}, "All", "Nearest first", "", 50
+
+    h_reset_btn.click(
+        _do_reset,
+        inputs=[],
+        outputs=[page_html, results_state, shortlist_state, meta_state,
+                 filter_state, sort_state, query_state, radius_state],
+        api_name=_AN,
+    )
 
 
 if __name__ == "__main__":
