@@ -29,15 +29,17 @@ _SESSION   = str(uuid.uuid4())   # per-deployment session ID for interaction log
 # Databricks SDK query helper
 # ---------------------------------------------------------------------------
 
-def _sdk_query(statement, wait="60s"):
+def _sdk_query(statement, wait="120s"):
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.service.sql import StatementState
 
     w = WorkspaceClient()
     warehouses = list(w.warehouses.list())
+    print(f"[SDK] Found {len(warehouses)} warehouse(s): {[(wh.name, wh.id, wh.state) for wh in warehouses]}")
     if not warehouses:
-        raise RuntimeError("No SQL warehouse found.")
+        raise RuntimeError("No SQL warehouse found — check warehouse permissions for the app service principal.")
     wh_id = warehouses[0].id
+    print(f"[SDK] Using warehouse: {warehouses[0].name} ({wh_id})")
 
     r = w.statement_execution.execute_statement(
         warehouse_id=wh_id,
@@ -110,7 +112,7 @@ try:
 
 except Exception as _e:
     import traceback
-    _STARTUP_ERROR = traceback.format_exc()
+    _STARTUP_ERROR = f"{type(_e).__name__}: {_e}\n\n{traceback.format_exc()}"
     print(f"[App] STARTUP FAILED:\n{_STARTUP_ERROR}")
     df                  = pd.DataFrame()
     centroids           = {}
@@ -459,10 +461,9 @@ with gr.Blocks(title="Referral Copilot", css=CSS) as demo:
         f'{_total_locations:,} searchable locations &nbsp;·&nbsp; DAIS for Good Hackathon 2026'
         f'</div></div>'
         + (f'<div style="background:#fff0f0;border:1px solid #c00;border-radius:8px;'
-           f'padding:12px 16px;margin-top:8px;font-family:monospace;font-size:12px;'
-           f'color:#c00;white-space:pre-wrap;">'
-           f'⚠ Startup error — check warehouse permissions and that Silver tables exist:\n\n'
-           f'{_STARTUP_ERROR}</div>' if _STARTUP_ERROR else "")
+           f'padding:12px 16px;margin-top:8px;font-family:monospace;font-size:11px;'
+           f'color:#c00;white-space:pre-wrap;overflow-x:auto;max-height:300px;overflow-y:auto;">'
+           f'&#9888; Startup error:\n{_STARTUP_ERROR}</div>' if _STARTUP_ERROR else "")
     )
 
     with gr.Row():
