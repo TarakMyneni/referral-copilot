@@ -225,11 +225,9 @@ _JS = """
     if(el) el.click();
   }
   window.sSearch = function() {
-    var w = (document.getElementById('vi-where')||{}).value || '';
-    var n = (document.getElementById('vi-need')||{}).value  || '';
+    var q = (document.getElementById('vi-query')||{}).value  || '';
     var r = (document.getElementById('vi-radius')||{}).value || '50';
-    _set('#h-where textarea, #h-where input', w);
-    _set('#h-need  textarea, #h-need  input', n);
+    _set('#h-query textarea, #h-query input', q);
     _set('#h-rad   input[type=number], #h-rad input', r);
     setTimeout(function(){ _click('#h-search button'); }, 120);
   };
@@ -252,7 +250,7 @@ _JS = """
   window.sClear  = function(){ setTimeout(function(){ _click('#h-clear button');  }, 120); };
   window.sExport = function(){ setTimeout(function(){ _click('#h-export button'); }, 120); };
   document.addEventListener('keydown', function(e){
-    if(e.key==='Enter' && ['vi-where','vi-need','vi-radius'].indexOf(e.target.id) >= 0)
+    if(e.key==='Enter' && ['vi-query','vi-radius'].indexOf(e.target.id) >= 0)
       window.sSearch();
   });
 })();
@@ -260,7 +258,7 @@ _JS = """
 """
 
 
-def _topbar_html(where, need, radius, n_saved):
+def _topbar_html(query, radius, n_saved):
     logo = (
         '<svg viewBox="0 0 40 40" width="38" height="38" xmlns="http://www.w3.org/2000/svg">'
         '<rect width="40" height="40" rx="9" fill="#3B6D11"/>'
@@ -277,25 +275,18 @@ def _topbar_html(where, need, radius, n_saved):
     <span style="font-size:22px;font-weight:700;color:{GRN_DK};letter-spacing:-0.3px;">SUVIDHA</span>
   </div>
   <div style="display:flex;align-items:center;border:1.5px solid #B4B2A9;border-radius:40px;
-              background:#fff;flex:1;max-width:640px;height:48px;overflow:hidden;">
-    <div class="sv-pill-section" style="flex:1;padding:4px 18px;border-right:0.5px solid {BORDER};height:100%;
-                display:flex;flex-direction:column;justify-content:center;">
+              background:#fff;flex:1;max-width:680px;height:48px;overflow:hidden;">
+    <div style="flex:1;padding:6px 20px;height:100%;display:flex;flex-direction:column;
+                justify-content:center;border-right:0.5px solid {BORDER};">
       <div style="font-size:9px;font-weight:600;color:{TXT_MUT};text-transform:uppercase;
-                  letter-spacing:0.5px;line-height:1;">WHERE</div>
-      <input id="vi-where" value="{where}" placeholder="City or district"
+                  letter-spacing:0.5px;line-height:1;">SEARCH</div>
+      <input id="vi-query" value="{query}" placeholder="e.g. dialysis near Jaipur"
         style="border:none;outline:none;background:transparent;font-size:13px;
                color:{TXT_PRI};width:100%;padding:0;margin-top:2px;font-family:inherit;">
     </div>
-    <div class="sv-pill-section" style="flex:1;padding:4px 18px;border-right:0.5px solid {BORDER};height:100%;
-                display:flex;flex-direction:column;justify-content:center;">
-      <div style="font-size:9px;font-weight:600;color:{TXT_MUT};text-transform:uppercase;
-                  letter-spacing:0.5px;line-height:1;">CARE NEED</div>
-      <input id="vi-need" value="{need}" placeholder="e.g. dialysis"
-        style="border:none;outline:none;background:transparent;font-size:13px;
-               color:{TXT_PRI};width:100%;padding:0;margin-top:2px;font-family:inherit;">
-    </div>
-    <div class="sv-pill-radius sv-pill-section" style="flex:0 0 110px;padding:4px 18px;border-right:0.5px solid {BORDER};height:100%;
-                display:flex;flex-direction:column;justify-content:center;">
+    <div class="sv-pill-radius" style="flex:0 0 100px;padding:6px 16px;height:100%;
+                display:flex;flex-direction:column;justify-content:center;
+                border-right:0.5px solid {BORDER};">
       <div style="font-size:9px;font-weight:600;color:{TXT_MUT};text-transform:uppercase;
                   letter-spacing:0.5px;line-height:1;">RADIUS</div>
       <div style="display:flex;align-items:center;gap:3px;margin-top:2px;">
@@ -615,7 +606,7 @@ def _shortlist_panel_html(shortlist):
 </div>"""
 
 
-def _render_page(results, shortlist, filter_val, sort_val, where, need, radius, meta=None):
+def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=None):
     meta = meta or {}
     n_saved = len(shortlist)
 
@@ -630,20 +621,19 @@ def _render_page(results, shortlist, filter_val, sort_val, where, need, radius, 
     else:
         filtered.sort(key=lambda r: r.get("distance_km") or 9999)
 
+    care_need = meta.get("care_need", "") if meta else ""
+    loc       = meta.get("resolved_location", "") if meta else ""
+
     # Results body
     if not results and not meta:
-        results_body = (
-            f'<div style="color:{TXT_MUT};font-size:13px;font-style:italic;padding:20px 0;">'
-            f'Search above to see facilities.</div>'
-        )
         if _STARTUP_ERROR:
             results_body = (
                 f'<div style="color:#c00;font-size:12px;padding:16px 0;">{_STARTUP_ERROR}</div>'
             )
-        elif not _data_ready:
+        else:
             results_body = (
-                f'<div style="font-size:13px;color:{TXT_MUT};padding:20px 0;">'
-                f'⏳ Data loading — try searching in a moment.</div>'
+                f'<div style="color:{TXT_MUT};font-size:13px;font-style:italic;padding:20px 0;">'
+                f'Try: <b>dialysis near Jaipur</b> or <b>eye care near Hyderabad</b></div>'
             )
     elif "error" in meta:
         results_body = (
@@ -653,26 +643,22 @@ def _render_page(results, shortlist, filter_val, sort_val, where, need, radius, 
             f'Try: <b>dialysis near Jaipur</b></span></div>'
         )
     elif not filtered:
-        loc = meta.get("resolved_location", where)
         results_body = (
             f'<div style="color:{TXT_SEC};font-size:13px;padding:16px 0;">'
             f'No {filter_val.lower()} facilities found for '
-            f'<b>{meta.get("care_need", need)}</b> within '
-            f'<b>{int(radius or 50)} km</b> of <b>{loc}</b>. '
+            f'<b>{care_need}</b> within <b>{int(radius or 50)} km</b> of <b>{loc}</b>. '
             f'Try "All" filter or a larger radius.</div>'
         )
     else:
-        loc     = meta.get("resolved_location", where)
         n_loc   = meta.get("located_count", len(results))
         n_unloc = meta.get("unlocated_count", 0)
         unloc_s = f" + {n_unloc} unverified" if n_unloc else ""
-        fuzzy   = (f' <span style="color:{TXT_MUT};font-size:11px;">'
-                   f'(matched: {loc})</span>'
+        fuzzy   = (f' <span style="color:{TXT_MUT};font-size:11px;">(matched: {loc})</span>'
                    if meta.get("location_match_type") == "fuzzy" else "")
         summary = (
             f'<div style="font-size:12px;color:{TXT_SEC};margin-bottom:12px;">'
             f'<b style="color:{TXT_PRI};">{n_loc}</b> facilities for '
-            f'<b style="color:{TXT_PRI};">{meta.get("care_need", need)}</b> within '
+            f'<b style="color:{TXT_PRI};">{care_need}</b> within '
             f'<b style="color:{TXT_PRI};">{int(radius or 50)} km</b> of '
             f'<b style="color:{TXT_PRI};">{loc}</b>{fuzzy}{unloc_s}</div>'
         )
@@ -689,7 +675,7 @@ def _render_page(results, shortlist, filter_val, sort_val, where, need, radius, 
         right_map = _empty_map_html()
 
     shortlist_panel = _shortlist_panel_html(shortlist)
-    topbar  = _topbar_html(where, need, radius or 50, n_saved)
+    topbar    = _topbar_html(query, radius or 50, n_saved)
     filterbar = _filterbar_html(filter_val, sort_val, len(results))
 
     responsive_css = f"""
@@ -704,7 +690,7 @@ def _render_page(results, shortlist, filter_val, sort_val, where, need, radius, 
   min-height:0; background:#fff;
 }}
 .sv-topbar-logo span {{ display:inline; }}
-.sv-pill-radius {{ display:flex !important; }}
+.sv-pill-radius {{ display:flex !important; flex-direction:column; }}
 
 /* Medium screens: tighten pill */
 @media (max-width:1100px) {{
@@ -780,21 +766,19 @@ footer { display: none !important; }
 with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
 
     # State
-    results_state  = gr.State([])
+    results_state   = gr.State([])
     shortlist_state = gr.State([])
-    meta_state     = gr.State({})
-    filter_state   = gr.State("All")
-    sort_state     = gr.State("Nearest first")
-    where_state    = gr.State("")
-    need_state     = gr.State("")
-    radius_state   = gr.State(50)
+    meta_state      = gr.State({})
+    filter_state    = gr.State("All")
+    sort_state      = gr.State("Nearest first")
+    query_state     = gr.State("")
+    radius_state    = gr.State(50)
 
     # Main visible output
-    page_html = gr.HTML(_render_page([], [], "All", "Nearest first", "", "", 50))
+    page_html = gr.HTML(_render_page([], [], "All", "Nearest first", "", 50))
 
     # Hidden Gradio bridge components (JS writes to these, Python reads them)
-    h_where     = gr.Textbox(value="",    visible=False, elem_id="h-where")
-    h_need      = gr.Textbox(value="",    visible=False, elem_id="h-need")
+    h_query     = gr.Textbox(value="",    visible=False, elem_id="h-query")
     h_rad       = gr.Number( value=50,    visible=False, elem_id="h-rad")
     h_search    = gr.Button("s",          visible=False, elem_id="h-search")
     h_filter    = gr.Textbox(value="All", visible=False, elem_id="h-filter")
@@ -811,25 +795,23 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     export_file = gr.File(label="Download shortlist", visible=False)
 
     # ── Search ────────────────────────────────────────────────────────────
-    def _do_search(where, need, radius, shortlist, filter_val, sort_val):
+    def _do_search(query, radius, shortlist, filter_val, sort_val):
         radius = int(radius or 50)
+        query  = (query or "").strip()
         if not _data_ready:
-            msg = _STARTUP_ERROR or "⏳ Data loading — try in a moment."
-            m = {"error": msg}
-            return (_render_page([], shortlist, filter_val, sort_val, where, need, radius, m),
-                    [], m, where, need, radius)
-
-        query = f"{need} near {where}" if where and need else (where or need or "").strip()
+            m = {"error": _STARTUP_ERROR or "Data still loading — please try again."}
+            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m),
+                    [], m, query, radius)
         if not query:
-            m = {"error": "Enter a location and care need."}
-            return (_render_page([], shortlist, filter_val, sort_val, where, need, radius, m),
-                    [], m, where, need, radius)
+            m = {"error": "Enter something like 'dialysis near Jaipur'."}
+            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m),
+                    [], m, query, radius)
 
         care_need, location = parse_combined_query(query, centroids)
         if not location:
             m = {"error": f"Couldn't find a location in '{query}'. Try 'dialysis near Jaipur'."}
-            return (_render_page([], shortlist, filter_val, sort_val, where, need, radius, m),
-                    [], m, where, need, radius)
+            return (_render_page([], shortlist, filter_val, sort_val, query, radius, m),
+                    [], m, query, radius)
         if not care_need:
             care_need = query
 
@@ -838,48 +820,45 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             care_need_query=care_need, location_query=location,
             radius_km=radius,
         )
-        html = _render_page(results, shortlist, filter_val, sort_val, where, need, radius, meta)
-        return html, results, meta, where, need, radius
+        html = _render_page(results, shortlist, filter_val, sort_val, query, radius, meta)
+        return html, results, meta, query, radius
 
     h_search.click(
         _do_search,
-        [h_where, h_need, h_rad, shortlist_state, filter_state, sort_state],
-        [page_html, results_state, meta_state, where_state, need_state, radius_state],
+        [h_query, h_rad, shortlist_state, filter_state, sort_state],
+        [page_html, results_state, meta_state, query_state, radius_state],
         api_name=_AN,
     )
 
     # ── Filter ────────────────────────────────────────────────────────────
-    def _do_filter(fv, results, shortlist, sort_val, where, need, radius, meta):
-        html = _render_page(results, shortlist, fv, sort_val, where, need, radius, meta)
-        return html, fv
+    def _do_filter(fv, results, shortlist, sort_val, query, radius, meta):
+        return _render_page(results, shortlist, fv, sort_val, query, radius, meta), fv
 
     h_filter_btn.click(
         _do_filter,
         [h_filter, results_state, shortlist_state, sort_state,
-         where_state, need_state, radius_state, meta_state],
+         query_state, radius_state, meta_state],
         [page_html, filter_state], api_name=_AN,
     )
 
     # ── Sort ──────────────────────────────────────────────────────────────
-    def _do_sort(sv, results, shortlist, filter_val, where, need, radius, meta):
-        html = _render_page(results, shortlist, filter_val, sv, where, need, radius, meta)
-        return html, sv
+    def _do_sort(sv, results, shortlist, filter_val, query, radius, meta):
+        return _render_page(results, shortlist, filter_val, sv, query, radius, meta), sv
 
     h_sort_btn.click(
         _do_sort,
         [h_sort, results_state, shortlist_state, filter_state,
-         where_state, need_state, radius_state, meta_state],
+         query_state, radius_state, meta_state],
         [page_html, sort_state], api_name=_AN,
     )
 
     # ── Bookmark ──────────────────────────────────────────────────────────
-    def _do_bookmark(bm_id, results, shortlist, filter_val, sort_val,
-                     where, need, radius, meta):
+    def _do_bookmark(bm_id, results, shortlist, filter_val, sort_val, query, radius, meta):
         if not bm_id or not results:
-            return _render_page(results, shortlist, filter_val, sort_val, where, need, radius, meta), shortlist
+            return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
         candidate = next((r for r in results if _s(r.get("id", r["name"])) == bm_id), None)
         if candidate is None:
-            return _render_page(results, shortlist, filter_val, sort_val, where, need, radius, meta), shortlist
+            return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
         fid = _s(candidate.get("id", candidate["name"]))
         if any(s.get("id") == fid for s in shortlist):
             shortlist = [s for s in shortlist if s.get("id") != fid]
@@ -899,43 +878,38 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 )
             except Exception:
                 pass
-        html = _render_page(results, shortlist, filter_val, sort_val, where, need, radius, meta)
-        return html, shortlist
+        return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
 
     h_bm_btn.click(
         _do_bookmark,
         [h_bm_id, results_state, shortlist_state, filter_state, sort_state,
-         where_state, need_state, radius_state, meta_state],
+         query_state, radius_state, meta_state],
         [page_html, shortlist_state], api_name=_AN,
     )
 
     # ── Remove from shortlist ─────────────────────────────────────────────
-    def _do_remove(rm_idx, results, shortlist, filter_val, sort_val,
-                   where, need, radius, meta):
+    def _do_remove(rm_idx, results, shortlist, filter_val, sort_val, query, radius, meta):
         try:
-            idx = int(rm_idx)
-            shortlist = [s for i, s in enumerate(shortlist) if i != idx]
+            shortlist = [s for i, s in enumerate(shortlist) if i != int(rm_idx)]
         except (ValueError, TypeError):
             pass
-        html = _render_page(results, shortlist, filter_val, sort_val, where, need, radius, meta)
-        return html, shortlist
+        return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
 
     h_rm_btn.click(
         _do_remove,
         [h_rm_idx, results_state, shortlist_state, filter_state, sort_state,
-         where_state, need_state, radius_state, meta_state],
+         query_state, radius_state, meta_state],
         [page_html, shortlist_state], api_name=_AN,
     )
 
     # ── Clear shortlist ───────────────────────────────────────────────────
-    def _do_clear(results, shortlist, filter_val, sort_val, where, need, radius, meta):
-        html = _render_page(results, [], filter_val, sort_val, where, need, radius, meta)
-        return html, []
+    def _do_clear(results, shortlist, filter_val, sort_val, query, radius, meta):
+        return _render_page(results, [], filter_val, sort_val, query, radius, meta), []
 
     h_clear.click(
         _do_clear,
         [results_state, shortlist_state, filter_state, sort_state,
-         where_state, need_state, radius_state, meta_state],
+         query_state, radius_state, meta_state],
         [page_html, shortlist_state], api_name=_AN,
     )
 
