@@ -656,7 +656,7 @@ def _chat_thread_html(history):
             )
 
     return (
-        f'<div style="padding:10px 20px 6px;background:{BG_PAGE};'
+        f'<div id="sv-chat-thread" style="padding:10px 20px 6px;background:{BG_PAGE};'
         f'font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',Roboto,sans-serif;">'
         + "".join(msgs) +
         f'</div>'
@@ -902,7 +902,7 @@ def _topbar_html(query, radius, n_saved):
                 justify-content:center;border-right:0.5px solid {BORDER};">
       <div style="font-size:9px;font-weight:600;color:{TXT_MUT};text-transform:uppercase;
                   letter-spacing:0.5px;line-height:1;">ASK SUVIDHA</div>
-      <input id="vi-query" value="{query}" placeholder="e.g. I need dialysis near Jaipur…"
+      <input id="vi-query" value="" autofocus placeholder="{'Ask a follow-up…' if query else 'e.g. I need dialysis near Jaipur…'}"
         onkeydown="if(event.key==='Enter'){{{_JS_SEARCH_INLINE}}}"
         style="border:none;outline:none;background:transparent;font-size:13px;
                color:{TXT_PRI};width:100%;padding:0;margin-top:2px;font-family:inherit;">
@@ -1023,7 +1023,7 @@ def _card_html(rank, r, shortlist, compare=None, search_lat=None, search_lon=Non
             f'margin:2px 3px 2px 0;display:inline-block;cursor:pointer;'
             f'user-select:none;">{label} ▾</span>'
             f'<div id="{cid}" style="display:none;background:#F8FBF5;'
-            f'border:0.5px solid {BORDER_G};border-radius:6px;'
+            f'border:0.5px solid {BORDER_G};border-radius:6px;color:{TXT_PRI};'
             f'padding:8px 10px;margin:3px 0 6px 0;line-height:1.6;">'
             f'{field_label_html}{content}</div>'
         )
@@ -1137,7 +1137,7 @@ def _card_html(rank, r, shortlist, compare=None, search_lat=None, search_lon=Non
     if chips_html:
         evidence_section += (
             f'<div style="margin-top:8px;">'
-            f'<div style="font-size:9px;font-weight:600;color:{TXT_MUT};'
+            f'<div style="font-size:9px;font-weight:600;color:{TXT_SEC};'
             f'text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px;">CONFIRMED IN</div>'
             f'<div>{chips_html}</div>'
             f'</div>'
@@ -1511,7 +1511,6 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
         results_body = (
             f'<div style="font-size:13px;color:{TXT_PRI};padding-bottom:12px;">'
             f'Showing results near <b>{loc_title}</b>. What kind of care are you looking for?</div>'
-            + _followup_html(meta)
         )
     elif not filtered:
         no_results_msg = (
@@ -1522,7 +1521,7 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             f'<br>Try switching to <b>All</b> filter, increasing the radius, or '
             f'checking the spelling.</div>'
         )
-        results_body = no_results_msg + _followup_html(meta)
+        results_body = no_results_msg
     else:
         n_loc   = meta.get("located_count", len(results))
         n_unloc = meta.get("unlocated_count", 0)
@@ -1554,8 +1553,7 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             for i, r in enumerate(filtered)
         )
         compare_panel = _compare_panel_html(compare) if len(compare) >= 2 else ""
-        followup      = _followup_html(meta)
-        results_body  = compare_panel + summary + followup + cards
+        results_body  = compare_panel + summary + cards
 
     # Map
     if meta.get("search_lat"):
@@ -1768,11 +1766,11 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         chat_history = (cur_meta or {}).get("chat_history", [])
 
         def _ret(results, meta, filt, q, r, compare):
-            """Attach chat_history to meta and render page."""
+            """Attach chat_history to meta and render page. Always clears query box."""
             meta = dict(meta or {})
             meta["chat_history"] = chat_history
             html = _render_page(results, shortlist, filt, sort_val, q, r, meta, compare)
-            return html, results, meta, q, r, compare
+            return html, results, meta, "", r, compare
 
         if not query:
             return _ret(cur_results or [], cur_meta or {}, filter_val,
@@ -1784,7 +1782,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             m = dict(cur_meta or {})
             m["chat_history"] = chat_history
             html = _render_page(cur_results or [], shortlist, filter_val, sort_val, query, radius, m, [])
-            return html, cur_results or [], m, query, radius, []
+            return html, cur_results or [], m, "", radius, []
 
         # Ask the LLM
         response, is_action = _llm_chat(query, chat_history)
@@ -1802,13 +1800,13 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 meta["chat_history"] = chat_history
                 search_q = f"{care_need} near {location}"
                 html = _render_page(results, shortlist, eff_filt, sort_val, search_q, radius, meta, [])
-                return html, results, meta, search_q, radius, []
+                return html, results, meta, "", radius, []
             ai_msg = "I'm having trouble connecting. Try a query like <b>dialysis near Jaipur</b>."
             chat_history = chat_history + [(query, ai_msg)]
             m = dict(cur_meta or {})
             m["chat_history"] = chat_history
             html = _render_page(cur_results or [], shortlist, filter_val, sort_val, query, radius, m, [])
-            return html, cur_results or [], m, query, radius, []
+            return html, cur_results or [], m, "", radius, []
 
         if is_action:
             action = response
@@ -1839,7 +1837,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 meta["chat_history"] = chat_history
                 search_q = f"{care_need} near {location}"
                 html = _render_page(results, shortlist, eff_filt, sort_val, search_q, radius, meta, [])
-                return html, results, meta, search_q, radius, []
+                return html, results, meta, "", radius, []
 
             elif action.get("action") == "filter":
                 org = (action.get("org_type", "") or "").lower()
