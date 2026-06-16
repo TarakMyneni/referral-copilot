@@ -42,10 +42,15 @@ def _sdk_query(statement, wait=None):
     wh_id = warehouses[0].id
     print(f"[SDK] Using warehouse: {warehouses[0].name} ({wh_id})")
 
-    # Submit async (no wait_timeout) then poll — avoids SDK timeout format issues
+    import json
+    import urllib.request
+    from databricks.sdk.service.sql import Disposition, Format
+
     r = w.statement_execution.execute_statement(
         warehouse_id=wh_id,
         statement=statement,
+        disposition=Disposition.EXTERNAL_LINKS,
+        format=Format.JSON_ARRAY,
         row_limit=20000,
     )
 
@@ -65,8 +70,10 @@ def _sdk_query(statement, wait=None):
     rows = []
     chunk = r.result
     while chunk:
-        if chunk.data_array:
-            rows.extend(chunk.data_array)
+        if chunk.external_links:
+            for link in chunk.external_links:
+                with urllib.request.urlopen(link.external_link) as resp:
+                    rows.extend(json.loads(resp.read()))
         if chunk.next_chunk_index is None:
             break
         chunk = w.statement_execution.get_statement_result_chunk_n(
