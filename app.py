@@ -1,4 +1,7 @@
+import csv
+import io
 import os
+import threading
 import uuid
 
 import folium
@@ -8,25 +11,58 @@ import pandas as pd
 from src.config import COLUMNS
 from src.geo import resolve_location
 from src.ranking import parse_combined_query
-from src.evidence import trust_label
+from src.evidence import evaluate_evidence, trust_label
 from src import agent as supervisor
 from src import feedback as feedback_store
-
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 SILVER_TABLE   = "mediguide.referral_copilot.facilities_silver"
-PINCODE_SILVER = "mediguide.referral_copilot.pincode_silver"
+CENTROIDS_TABLE = "mediguide.referral_copilot.location_centroids"
 
-_BASE      = os.path.dirname(os.path.abspath(__file__))
-_NEEDED    = set(COLUMNS.values())
-_SESSION   = str(uuid.uuid4())   # per-deployment session ID for interaction logs
+_BASE    = os.path.dirname(os.path.abspath(__file__))
+_NEEDED  = set(COLUMNS.values())
+_SESSION = str(uuid.uuid4())
 
+_DATA_DIR       = os.path.join(_BASE, "data")
+_FACILITIES_CSV = os.path.join(_DATA_DIR, "facilities_silver.csv")
+_CENTROIDS_CSV  = os.path.join(_DATA_DIR, "location_centroids.csv")
+
+# Spec colours
+GRN_DK   = "#27500A"
+GRN_MID  = "#3B6D11"
+GRN_LT   = "#639922"
+GRN_PALE = "#EAF3DE"
+BG_PAGE  = "#F7FAF3"
+BG_CARD  = "#FFFFFF"
+BG_GOVT  = "#E6F1FB"
+BORDER   = "#D3D1C7"
+BORDER_G = "#C0DD97"
+TXT_PRI  = "#2C2C2A"
+TXT_SEC  = "#5F5E5A"
+TXT_MUT  = "#888780"
+AMBER    = "#854F0B"
+RED_FLAG = "#993C1D"
+GOVT_CLR = "#185FA5"
+
+TRUST_CFG = {
+    "✓ Strong evidence":    ("strong",  GRN_PALE, "#97C459", GRN_DK,   "✓ Strong"),
+    "◐ Partial evidence":   ("partial", "#FAEEDA", "#FAC775", "#633806", "◐ Partial"),
+    "⚠️ Needs verification": ("verify",  "#FAECE7", "#F0997B", "#712B13", "⚠ Verify"),
+}
+
+FIELD_LABELS = {
+    "specialties": "Specialties", "description": "Description",
+    "capability": "Capability", "procedure": "Procedure",
+    "equipment": "Equipment", "num_doctors": "No. of doctors",
+    "capacity": "Capacity", "year_established": "Year established",
+    "source_urls": "Source URL",
+}
 
 # ---------------------------------------------------------------------------
-# Databricks SDK query helper
+# Databricks SDK query
 # ---------------------------------------------------------------------------
 
 def _sdk_query(statement, wait=None):
@@ -36,24 +72,19 @@ def _sdk_query(statement, wait=None):
 
     w = WorkspaceClient()
     warehouses = list(w.warehouses.list())
-    print(f"[SDK] Found {len(warehouses)} warehouse(s): {[(wh.name, wh.id, wh.state) for wh in warehouses]}")
     if not warehouses:
         raise RuntimeError("No SQL warehouse found.")
     wh_id = warehouses[0].id
     print(f"[SDK] Using warehouse: {warehouses[0].name} ({wh_id})")
 
     r = w.statement_execution.execute_statement(
-        warehouse_id=wh_id,
-        statement=statement,
-        row_limit=20000,
+        warehouse_id=wh_id, statement=statement, row_limit=20000,
     )
-
     terminal = {StatementState.SUCCEEDED, StatementState.FAILED,
                 StatementState.CANCELED, StatementState.CLOSED}
     for _ in range(120):
         if r.status.state in terminal:
             break
-        print(f"[SDK] state={r.status.state} — waiting …")
         time.sleep(5)
         r = w.statement_execution.get_statement(r.statement_id)
 
@@ -69,78 +100,40 @@ def _sdk_query(statement, wait=None):
         if chunk.next_chunk_index is None:
             break
         chunk = w.statement_execution.get_statement_result_chunk_n(
-            statement_id=r.statement_id,
-            chunk_index=chunk.next_chunk_index,
+            statement_id=r.statement_id, chunk_index=chunk.next_chunk_index,
         )
     return col_names, rows
-
 
 # ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
 
-_TEXT_COLS = {"description", "capability", "procedure_text", "equipment", "source_urls"}
-_TEXT_LIMIT = 300   # chars — keeps total payload under 25 MB inline limit
+_TEXT_COLS  = {"description", "capability", "procedure_text", "equipment", "source_urls"}
+_TEXT_LIMIT = 300
 
 def _load_silver():
     parts = []
     for c in sorted(_NEEDED):
         if not c:
             continue
-        if c in _TEXT_COLS:
-            parts.append(f"SUBSTRING(`{c}`, 1, {_TEXT_LIMIT}) AS `{c}`")
-        else:
-            parts.append(f"`{c}`")
+        parts.append(f"SUBSTRING(`{c}`, 1, {_TEXT_LIMIT}) AS `{c}`"
+                     if c in _TEXT_COLS else f"`{c}`")
     cols, rows = _sdk_query(f"SELECT {', '.join(parts)} FROM {SILVER_TABLE}")
     df = pd.DataFrame(rows, columns=cols)
-    print(f"[App] Loaded {len(df):,} facilities from {SILVER_TABLE}")
+    print(f"[App] Loaded {len(df):,} facilities from Delta")
     return df
 
-
-CENTROIDS_TABLE = "mediguide.referral_copilot.location_centroids"
-
-def _load_centroids():
-    try:
-        cols, rows = _sdk_query(f"SELECT level, name_key, lat, lon FROM {CENTROIDS_TABLE}")
-        # Build dict: name_key -> {lat, lon}  (finer level overwrites coarser)
-        level_order = {"state": 0, "region": 1, "division": 2, "district": 3, "city": 4}
-        df_c = pd.DataFrame(rows, columns=cols)
-        df_c["lat"] = pd.to_numeric(df_c["lat"], errors="coerce")
-        df_c["lon"] = pd.to_numeric(df_c["lon"], errors="coerce")
-        df_c = df_c.dropna(subset=["lat", "lon"])
-        df_c["_order"] = df_c["level"].map(level_order).fillna(0)
-        df_c = df_c.sort_values("_order")   # coarse first, fine last (overwrites)
-        result = {
-            row["name_key"]: {"lat": row["lat"], "lon": row["lon"]}
-            for _, row in df_c.iterrows()
-        }
-        print(f"[App] Loaded {len(result):,} location centroids")
-        return result
-    except Exception as e:
-        print(f"[App] Centroids table unavailable: {e}")
-        return {}
-
-
-# ---------------------------------------------------------------------------
-# Startup: load data in background so Gradio starts immediately
-# ---------------------------------------------------------------------------
-df                = pd.DataFrame()
-centroids         = {}
-_total_facilities = 0
-_total_cities     = 0
-_total_locations  = 0
-_STARTUP_ERROR    = None
-_data_ready       = False
-
-
-_DATA_DIR = os.path.join(_BASE, "data")
-_FACILITIES_CSV  = os.path.join(_DATA_DIR, "facilities_silver.csv")
-_CENTROIDS_CSV   = os.path.join(_DATA_DIR, "location_centroids.csv")
-
-
-def _load_facilities_sql():
-    return _load_silver()
-
+def _load_centroids_delta():
+    cols, rows = _sdk_query(f"SELECT level, name_key, lat, lon FROM {CENTROIDS_TABLE}")
+    df_c = pd.DataFrame(rows, columns=cols)
+    df_c["lat"] = pd.to_numeric(df_c["lat"], errors="coerce")
+    df_c["lon"] = pd.to_numeric(df_c["lon"], errors="coerce")
+    df_c = df_c.dropna(subset=["lat", "lon"])
+    level_order = {"state": 0, "region": 1, "division": 2, "district": 3, "city": 4}
+    df_c["_order"] = df_c["level"].map(level_order).fillna(0)
+    df_c = df_c.sort_values("_order")
+    return {row["name_key"]: {"lat": row["lat"], "lon": row["lon"]}
+            for _, row in df_c.iterrows()}
 
 def _load_facilities_csv():
     _df = pd.read_csv(_FACILITIES_CSV, dtype=str)
@@ -148,11 +141,6 @@ def _load_facilities_csv():
         if col in _df.columns:
             _df[col] = pd.to_numeric(_df[col], errors="coerce")
     return _df
-
-
-def _load_centroids_sql():
-    return _load_centroids()
-
 
 def _load_centroids_csv():
     df_c = pd.read_csv(_CENTROIDS_CSV, dtype=str)
@@ -165,8 +153,18 @@ def _load_centroids_csv():
     return {row["name_key"]: {"lat": row["lat"], "lon": row["lon"]}
             for _, row in df_c.iterrows()}
 
+# ---------------------------------------------------------------------------
+# Startup — background thread, CSV-first fallback
+# ---------------------------------------------------------------------------
 
-import threading
+df                = pd.DataFrame()
+centroids         = {}
+_total_facilities = 0
+_total_cities     = 0
+_total_locations  = 0
+_STARTUP_ERROR    = None
+_data_ready       = False
+
 
 def _background_load():
     global df, centroids, _total_facilities, _total_cities
@@ -174,23 +172,18 @@ def _background_load():
     try:
         if os.path.exists(_FACILITIES_CSV):
             df = _load_facilities_csv()
-            print(f"[App] Facilities loaded from CSV ({len(df):,} rows)")
+            print(f"[App] Facilities from CSV ({len(df):,})")
         else:
-            df = _load_facilities_sql()
-            print(f"[App] Facilities loaded from Delta ({len(df):,} rows)")
-
+            df = _load_silver()
         if os.path.exists(_CENTROIDS_CSV):
             centroids = _load_centroids_csv()
-            print(f"[App] Centroids loaded from CSV ({len(centroids):,})")
+            print(f"[App] Centroids from CSV ({len(centroids):,})")
         else:
-            centroids = _load_centroids_sql()
-            print(f"[App] Centroids loaded from Delta ({len(centroids):,})")
-
+            centroids = _load_centroids_delta()
         try:
             feedback_store.load(_sdk_query)
-        except Exception as _fe:
-            print(f"[App] Feedback skipped: {_fe}")
-
+        except Exception as fe:
+            print(f"[App] Feedback skipped: {fe}")
         _total_facilities = len(df)
         _total_cities     = df[COLUMNS["city"]].dropna().nunique() if not df.empty else 0
         _total_locations  = len(centroids)
@@ -203,418 +196,700 @@ def _background_load():
 
 threading.Thread(target=_background_load, daemon=True).start()
 
-
 # ---------------------------------------------------------------------------
-# Formatting helpers
+# Render helpers
 # ---------------------------------------------------------------------------
 
-FIELD_LABELS = {
-    "specialties":      "specialties",
-    "description":      "description",
-    "capability":       "capability",
-    "procedure":        "procedure",
-    "equipment":        "equipment",
-    "num_doctors":      "number of doctors",
-    "capacity":         "capacity",
-    "year_established": "year established",
-    "source_urls":      "source URL",
-}
-
-_TRUST_STYLES = {
-    "✓ Strong evidence":    ("background:#1a7f4b;color:#fff;", "✓ Strong"),
-    "◐ Partial evidence":   ("background:#b8621a;color:#fff;", "◐ Partial"),
-    "⚠️ Needs verification": ("background:#c0392b;color:#fff;", "⚠ Verify"),
-}
-
-_GEO_NOTE = {
-    "POSTCODE": "<span style='font-size:10px;color:#888;'>(postcode centroid)</span>",
-    "DISTRICT": "<span style='font-size:10px;color:#888;'>(district centroid)</span>",
-    "DIVISION": "<span style='font-size:10px;color:#999;'>(division centroid)</span>",
-    "REGION":   "<span style='font-size:10px;color:#f90;'>(region centroid)</span>",
-    "STATE":    "<span style='font-size:10px;color:#f90;'>(state centroid)</span>",
-    "UNKNOWN":  "<span style='font-size:10px;color:#c00;'>(location unverified)</span>",
-}
+def _safe(v):
+    s = str(v or "")
+    return "" if s in ("nan", "None") else s
 
 
-def _phone_link(phone):
-    if not phone or str(phone) in ("nan", "None", ""):
-        return ""
-    p = str(phone)
-    display = p[:20] + "…" if len(p) > 20 else p
-    return f'📞 <a href="tel:{p}" style="color:#0B2026;">{display}</a>'
+def _thumb(org_type):
+    ot = (_safe(org_type)).lower()
+    is_govt = any(w in ot for w in ("government", "govt", "public", "municipal", "district"))
+    bg   = BG_GOVT if is_govt else GRN_PALE
+    clr  = GOVT_CLR if is_govt else GRN_MID
+    label = "GOVT" if is_govt else "PRIVATE"
+    return bg, clr, label
 
 
-def _website_link(site):
-    if not site or str(site) in ("nan", "None", ""):
-        return ""
-    s = str(site)
-    url = s if s.startswith("http") else f"https://{s}"
-    display = s.replace("https://", "").replace("http://", "")
-    if len(display) > 35:
-        display = display[:35] + "…"
-    return f'🌐 <a href="{url}" target="_blank" style="color:#0B2026;">{display}</a>'
-
-
-def format_result_card(rank, r):
+def _build_card(rank, r, shortlist):
     ev         = r["evidence"]
     badge_text = trust_label(ev)
-    badge_style, badge_label = _TRUST_STYLES.get(badge_text, ("background:#666;color:#fff;", badge_text))
-    badge_html = (
-        f'<span style="padding:4px 12px;border-radius:20px;font-size:11px;'
-        f'font-weight:600;white-space:nowrap;{badge_style}">{badge_label}</span>'
+    _, tbg, tborder, tclr, tlabel = TRUST_CFG.get(
+        badge_text, ("verify", "#FAECE7", "#F0997B", "#712B13", "⚠ Verify"))
+
+    thumb_bg, thumb_clr, type_label = _thumb(r.get("org_type", ""))
+    dist   = r.get("distance_km")
+    dist_s = f"{dist} km" if dist is not None else "—"
+    fid    = _safe(r.get("id", r["name"]))
+    saved  = any(s.get("id") == fid for s in shortlist)
+
+    # Evidence chips
+    match_chips = "".join(
+        f'<span style="background:{GRN_PALE};border:0.5px solid {BORDER_G};'
+        f'border-radius:20px;padding:2px 8px;font-size:11px;color:{GRN_DK};'
+        f'margin:2px 2px 2px 0;display:inline-block;">'
+        f'{FIELD_LABELS.get(m["field"], m["field"])}</span>'
+        for m in ev["matching"]
     )
 
-    # Distance + geo precision note
-    dist      = r.get("distance_km")
-    dist_str  = f"{dist} km away" if dist is not None else "distance unknown"
-    geo_note  = _GEO_NOTE.get(r.get("geo_source", ""), "")
-    geo_line  = f"{dist_str} {geo_note}".strip()
+    missing_items = ev.get("missing", [])
+    missing_html = ""
+    if missing_items:
+        joined = " and ".join(FIELD_LABELS.get(m, m) for m in missing_items)
+        missing_html = (
+            f'<div style="font-size:11px;color:{AMBER};margin-top:4px;">'
+            f'ℹ {joined} not reported</div>'
+        )
 
-    # Org type
-    org = r.get("org_type", "")
-    org_tag = f" · {org.title()}" if org and org not in ("nan", "None") else ""
+    flags_html = "".join(
+        f'<div style="font-size:11px;color:{RED_FLAG};margin-top:3px;">⚠ {f}</div>'
+        for f in ev.get("suspicious", [])
+    )
 
-    meta_line = f"📍 {r['city']}, {r['state']} &nbsp;·&nbsp; {geo_line}{org_tag}"
+    phone   = _safe(r.get("phone", ""))
+    website = _safe(r.get("website", ""))
+    phone_html = (
+        f'<a href="tel:{phone}" style="color:{GRN_MID};font-size:11px;text-decoration:none;">'
+        f'📞 {phone[:18]}{"…" if len(phone)>18 else ""}</a>'
+        if phone else ""
+    )
+    web_domain = website.replace("https://","").replace("http://","")
+    web_html = (
+        f'<a href="{website if website.startswith("http") else "https://"+website}" '
+        f'target="_blank" style="color:{GRN_MID};font-size:11px;text-decoration:none;">'
+        f'🌐 {web_domain[:24]}{"…" if len(web_domain)>24 else ""}</a>'
+        if website else ""
+    )
 
-    # Score pills (only shown when semantic or feedback is active)
-    score_pills = ""
+    bm_bg  = GRN_PALE if saved else BG_CARD
+    bm_bdr = GRN_MID  if saved else BORDER
+    bm_clr = GRN_MID  if saved else TXT_MUT
+    bm_tip = "Saved" if saved else "Save to shortlist"
+
+    # JS bookmark: sets hidden textbox value, dispatches input event, clicks hidden btn
+    bm_js = (
+        f"var b=document.querySelector('#bm-id-box textarea,#bm-id-box input');"
+        f"if(b){{b.value='{fid}';b.dispatchEvent(new Event('input',{{bubbles:true}}));"
+        f"var t=document.querySelector('#bm-trigger button');if(t)t.click();}}"
+    )
+
+    sem_pill = ""
     if r.get("sem_score", 0) > 0:
-        score_pills += (
-            f'<span style="font-size:10px;background:#e8f4fd;color:#1565c0;'
-            f'padding:2px 7px;border-radius:10px;margin-right:4px;">🔍 sem {r["sem_score"]:.2f}</span>'
-        )
-    if r.get("fb_saves", 0) > 0:
-        score_pills += (
-            f'<span style="font-size:10px;background:#fdf6e3;color:#7d5a00;'
-            f'padding:2px 7px;border-radius:10px;">⭐ {r["fb_saves"]} save(s)</span>'
-        )
-
-    def _col(title, color, items):
-        if not items:
-            return ""
-        rows = "".join(f'<div style="font-size:12px;padding:1px 0;">{i}</div>' for i in items)
-        return (
-            f'<div><div style="font-size:12px;font-weight:600;color:{color};margin-bottom:3px;">'
-            f'{title}</div>{rows}</div>'
-        )
-
-    matching_items = [f'• {FIELD_LABELS.get(m["field"], m["field"])}' for m in ev["matching"]]
-    missing_items  = [f'• {FIELD_LABELS.get(m, m)} not reported'      for m in ev["missing"]]
-
-    evidence_html = (
-        f'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));'
-        f'gap:10px;margin-top:10px;">'
-        + _col("Matching evidence", "#1a7f4b", matching_items)
-        + _col("Missing data",      "#b8621a", missing_items)
-        + _col("⚠ Flags",           "#c0392b", ev["suspicious"])
-        + "</div>"
-    )
-
-    contact_parts = list(filter(None, [_phone_link(r.get("phone", "")),
-                                       _website_link(r.get("website", ""))]))
-    contact_html = ""
-    if contact_parts:
-        contact_html = (
-            f'<div style="margin-top:10px;font-size:12px;color:#555;'
-            f'border-top:1px solid #f0f0f0;padding-top:8px;">'
-            + " &nbsp;·&nbsp; ".join(contact_parts) + "</div>"
-        )
+        sem_pill = (f'<span style="font-size:10px;background:#E8F0FE;color:#1A56DB;'
+                    f'padding:1px 6px;border-radius:10px;margin-left:6px;">AI</span>')
 
     return f"""
-<div style="border:1px solid #e2e8f0;border-radius:10px;padding:16px;margin:8px 0;
-            background:#fff;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;">
-    <div>
-      <div style="font-size:11px;color:#888;font-weight:600;letter-spacing:0.5px;
-                  text-transform:uppercase;margin-bottom:4px;">#{rank}</div>
-      <div style="font-size:17px;font-weight:700;color:#0B2026;">{r['name']}</div>
-      <div style="color:#555;font-size:13px;margin-top:3px;">{meta_line}</div>
-      {'<div style="margin-top:5px;">' + score_pills + '</div>' if score_pills else ''}
-    </div>
-    {badge_html}
+<div style="display:flex;border:0.5px solid {BORDER};border-radius:10px;
+            background:{BG_CARD};margin-bottom:10px;overflow:hidden;
+            box-shadow:0 1px 2px rgba(0,0,0,0.04);">
+  <!-- Thumb -->
+  <div style="width:88px;min-width:88px;background:{thumb_bg};display:flex;
+              flex-direction:column;align-items:center;justify-content:center;
+              padding:12px 6px;position:relative;flex-shrink:0;">
+    <div style="font-size:26px;opacity:0.45;color:{thumb_clr};">🏥</div>
+    <div style="font-size:9px;font-weight:600;letter-spacing:0.4px;
+                color:{thumb_clr};text-transform:uppercase;margin-top:4px;
+                text-align:center;">{type_label}</div>
+    <!-- Trust badge pinned to bottom -->
+    <div style="position:absolute;bottom:0;left:0;right:0;
+                background:{tbg};border-top:1px solid {tborder};
+                color:{tclr};font-size:10px;font-weight:500;
+                text-align:center;padding:5px 4px;">{tlabel}</div>
   </div>
-  {evidence_html}
-  {contact_html}
+  <!-- Body -->
+  <div style="flex:1;padding:12px 14px;display:flex;flex-direction:column;gap:7px;
+              min-width:0;">
+    <!-- Name row -->
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+      <div style="min-width:0;">
+        <div style="font-size:14px;font-weight:500;color:{TXT_PRI};
+                    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+          <span style="font-size:11px;color:{TXT_MUT};font-weight:400;margin-right:4px;">
+            #{rank}</span>{r['name']}{sem_pill}
+        </div>
+        <div style="font-size:11px;color:{TXT_MUT};margin-top:2px;">
+          {_safe(r.get('city'))}, {_safe(r.get('state'))}
+        </div>
+      </div>
+      <div style="font-size:11px;color:{TXT_SEC};white-space:nowrap;flex-shrink:0;">
+        📍 {dist_s}
+      </div>
+    </div>
+    <!-- Evidence -->
+    {f'<div><div style="font-size:10px;color:{TXT_MUT};letter-spacing:0.3px;text-transform:uppercase;margin-bottom:4px;">Confirmed in</div><div>{match_chips}</div></div>' if match_chips else ''}
+    {f'<div style="border-top:0.5px solid {BORDER};padding-top:6px;">{missing_html}{flags_html}</div>' if (missing_items or ev.get("suspicious")) else ''}
+    <!-- Footer -->
+    <div style="border-top:0.5px solid {BORDER};padding-top:8px;
+                display:flex;align-items:center;justify-content:space-between;
+                flex-wrap:wrap;gap:6px;margin-top:auto;">
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        {phone_html}
+        {web_html}
+      </div>
+      <button onclick="{bm_js}" title="{bm_tip}"
+        style="width:28px;height:28px;border-radius:50%;border:0.5px solid {bm_bdr};
+               background:{bm_bg};cursor:pointer;font-size:14px;color:{bm_clr};
+               display:flex;align-items:center;justify-content:center;flex-shrink:0;
+               line-height:1;">{"🔖" if saved else "🏷"}</button>
+    </div>
+  </div>
 </div>
 """
 
 
-def build_map_html(results, search_lat, search_lon):
-    f = folium.Figure(width="100%", height="380px")
-    m = folium.Map(location=[search_lat, search_lon], zoom_start=8, tiles="CartoDB positron")
-    f.add_child(m)
-
-    folium.CircleMarker(
-        location=[search_lat, search_lon],
-        radius=9, color="#FF3621", fill=True,
-        fill_color="#FF3621", fill_opacity=0.85,
-        tooltip="Search centre",
+def _build_map(results, search_lat, search_lon, radius_km, location_name):
+    import base64
+    m = folium.Map(location=[search_lat, search_lon], zoom_start=8,
+                   tiles="CartoDB Positron")
+    folium.Circle(
+        [search_lat, search_lon], radius=radius_km * 1000,
+        color=GRN_MID, fill=True, fill_color=GRN_PALE,
+        fill_opacity=0.08, weight=1.5,
     ).add_to(m)
-
-    color_map = {
-        "✓ Strong evidence":    "green",
-        "◐ Partial evidence":   "orange",
-        "⚠️ Needs verification": "red",
-    }
-    for i, r in enumerate(results):
+    folium.CircleMarker(
+        [search_lat, search_lon], radius=7, color=GRN_DK,
+        fill=True, fill_color=GRN_DK, fill_opacity=0.9,
+        tooltip=f"Search: {location_name}",
+    ).add_to(m)
+    color_map = {"strong": GRN_DK, "partial": "#BA7517", "verify": "#D85A30"}
+    for r in results:
         lat, lon = r.get("lat"), r.get("lon")
         if not lat or not lon:
             continue
-        trust = trust_label(r["evidence"])
-        dist_label = f"{r['distance_km']} km" if r.get("distance_km") is not None else "dist unknown"
-        popup_html = (
-            f"<div style='min-width:180px'><b>{r['name']}</b><br>"
-            f"{r['city']}, {r['state']}<br>"
-            f"{dist_label} · {trust}</div>"
-        )
-        folium.Marker(
-            location=[lat, lon],
-            popup=folium.Popup(popup_html, max_width=250),
-            tooltip=f"{i+1}. {r['name']}",
-            icon=folium.Icon(color=color_map.get(trust, "blue"),
-                             icon="plus-sign", prefix="glyphicon"),
+        badge_text = trust_label(r["evidence"])
+        key, *_ = TRUST_CFG.get(badge_text, ("verify",))
+        c = color_map.get(key, GRN_LT)
+        dist_s = f"{r['distance_km']} km" if r.get("distance_km") is not None else "—"
+        folium.CircleMarker(
+            [lat, lon], radius=7, color=c,
+            fill=True, fill_color=c, fill_opacity=0.85,
+            tooltip=f"{r['name']} · {dist_s}",
         ).add_to(m)
+    n = sum(1 for r in results if r.get("lat"))
 
-    return f._repr_html_()
+    map_bytes = m.get_root().render().encode("utf-8")
+    b64 = base64.b64encode(map_bytes).decode("ascii")
+    label = (
+        f'<div style="position:absolute;top:8px;left:8px;z-index:999;'
+        f'background:rgba(255,255,255,0.9);padding:4px 8px;border-radius:6px;'
+        f'font-size:11px;color:{TXT_SEC};border:0.5px solid {BORDER};">'
+        f'{location_name} · {n} facilities · {radius_km} km radius</div>'
+    )
+    return (
+        f'<div style="position:relative;width:100%;height:260px;border-radius:8px;'
+        f'overflow:hidden;border:0.5px solid {BORDER};">'
+        f'{label}'
+        f'<iframe src="data:text/html;base64,{b64}" '
+        f'style="width:100%;height:100%;border:none;"></iframe></div>'
+    )
 
+
+def _build_shortlist_panel(shortlist):
+    count = len(shortlist)
+    badge = (
+        f'<span style="background:{GRN_PALE};border:0.5px solid {BORDER_G};'
+        f'border-radius:10px;padding:1px 7px;font-size:10px;color:{GRN_DK};">'
+        f'{count}</span>'
+    )
+    items_html = ""
+    for i, s in enumerate(shortlist):
+        dist_s  = f"{s['distance_km']} km" if s.get("distance_km") is not None else "—"
+        _, tbg, tbdr, tclr, tlbl = TRUST_CFG.get(
+            s.get("trust", ""), ("verify", "#FAECE7", "#F0997B", "#712B13", "⚠ Verify"))
+        rm_js = (
+            f"var b=document.querySelector('#rm-idx-box textarea,#rm-idx-box input');"
+            f"if(b){{b.value='{i}';b.dispatchEvent(new Event('input',{{bubbles:true}}));"
+            f"var t=document.querySelector('#rm-trigger button');if(t)t.click();}}"
+        )
+        items_html += f"""
+<div style="background:{BG_PAGE};border:0.5px solid {BORDER_G};border-radius:8px;
+            padding:7px 8px;margin-bottom:5px;display:flex;
+            align-items:center;justify-content:space-between;gap:6px;">
+  <div style="min-width:0;">
+    <div style="font-size:12px;font-weight:500;color:{TXT_PRI};
+                white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{s['name']}</div>
+    <div style="font-size:10px;color:{TXT_SEC};">{dist_s} · {s['city']}
+      <span style="background:{tbg};border:0.5px solid {tbdr};border-radius:8px;
+                   padding:1px 5px;color:{tclr};margin-left:4px;">{tlbl}</span>
+    </div>
+  </div>
+  <button onclick="{rm_js}"
+    style="background:none;border:none;cursor:pointer;font-size:14px;
+           color:{TXT_MUT};flex-shrink:0;line-height:1;">×</button>
+</div>"""
+
+    return f"""
+<div style="background:{BG_CARD};border-top:1px solid {BORDER};padding:12px 14px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+    <span style="font-size:13px;font-weight:500;color:{TXT_PRI};">Shortlist {badge}</span>
+    <span id="clear-shortlist-link" onclick="
+      var b=document.querySelector('#clear-trigger button');if(b)b.click();"
+      style="font-size:11px;color:{TXT_MUT};text-decoration:underline;cursor:pointer;">
+      Clear</span>
+  </div>
+  {items_html if items_html else f'<div style="font-size:12px;color:{TXT_MUT};font-style:italic;">No facilities saved yet.</div>'}
+</div>"""
+
+
+def _export_csv(shortlist):
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["Name", "City", "State", "Distance (km)", "Trust", "Phone", "Website"])
+    for s in shortlist:
+        w.writerow([s["name"], s["city"], s["state"],
+                    s.get("distance_km") or "", s.get("trust") or "",
+                    s.get("phone") or "", s.get("website") or ""])
+    path = os.path.join(_BASE, "data", "shortlist_export.csv")
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        f.write(buf.getvalue())
+    return path
 
 # ---------------------------------------------------------------------------
 # Search
 # ---------------------------------------------------------------------------
 
-def run_search(location, care_need, radius_km):
-    if not _data_ready:
-        msg = (f'<div style="padding:16px;color:#888;">'
-               f'{"⚠ " + _STARTUP_ERROR if _STARTUP_ERROR else "⏳ Data is still loading — please wait ~30 seconds and try again."}'
-               f'</div>')
-        return msg, [], "", ""
-    if not location.strip() or not care_need.strip():
-        return "Please enter both a location and a care need.", [], "", ""
-
-    results, meta = supervisor.run(
-        df=df,
-        centroids=centroids,
-        care_need_query=care_need,
-        location_query=location,
-        radius_km=radius_km,
-    )
-
-    if "error" in meta:
-        return f'<p style="color:#c00;padding:12px 0;">{meta["error"]}</p>', [], "", ""
-
+def _render_results(results, shortlist, meta, location, radius_km):
     if not results:
         return (
-            f'<p style="color:#666;padding:16px 0;">No facilities found matching '
-            f'<b>{care_need}</b> within {radius_km} km of <b>{meta["resolved_location"]}</b>. '
-            f'Try a larger radius.</p>'
-        ), [], "", meta.get("care_need", care_need)
+            f'<div style="color:{TXT_SEC};padding:16px 0;font-size:13px;">'
+            f'No facilities found for <b>{meta.get("care_need","")}</b> within '
+            f'<b>{radius_km} km</b> of <b>{location}</b>. Try a larger radius.</div>'
+        ), ""
 
-    match_note = ""
-    if meta["location_match_type"] == "fuzzy":
-        match_note = f" (closest match: <em>{meta['resolved_location']}</em>)"
-
-    unloc_note = (
-        f" + {meta['unlocated_count']} with unverified location"
-        if meta.get("unlocated_count") else ""
-    )
-    sem_badge = (
-        ' <span style="font-size:11px;background:#e8f4fd;color:#1565c0;'
-        'padding:2px 8px;border-radius:10px;">🔍 semantic</span>'
-        if meta.get("semantic_active") else ""
-    )
+    n_loc   = meta.get("located_count", len(results))
+    n_unloc = meta.get("unlocated_count", 0)
+    need    = meta.get("care_need", "")
+    sem_tag = (f'<span style="background:#E8F0FE;color:#1A56DB;border-radius:10px;'
+               f'padding:1px 7px;font-size:10px;margin-left:6px;">AI-enhanced</span>'
+               if meta.get("semantic_active") else "")
+    fuzzy   = (f' <span style="color:{TXT_MUT};font-size:11px;">'
+               f'(matched: {meta["resolved_location"]})</span>'
+               if meta.get("location_match_type") == "fuzzy" else "")
+    unloc   = (f' + {n_unloc} unverified' if n_unloc else "")
 
     summary = (
-        f'<div style="background:#f0f7f4;border-left:4px solid #1a7f4b;padding:10px 14px;'
-        f'border-radius:0 6px 6px 0;margin-bottom:4px;font-size:14px;">'
-        f'<b>{meta["located_count"]} match(es)</b> for <b>{meta["care_need"]}</b>{sem_badge} '
-        f'within <b>{radius_km} km</b> of <b>{location}</b>{match_note}{unloc_note}. '
-        f'Showing top {len(results)}.</div>'
+        f'<div style="font-size:12px;color:{TXT_SEC};margin-bottom:10px;">'
+        f'<b style="color:{TXT_PRI};">{n_loc}</b> facilities for '
+        f'<b style="color:{TXT_PRI};">{need}</b>{sem_tag} within '
+        f'<b style="color:{TXT_PRI};">{radius_km} km</b> of '
+        f'<b style="color:{TXT_PRI};">{location}</b>{fuzzy}{unloc}'
+        f'</div>'
     )
+    cards = "".join(_build_card(i + 1, r, shortlist) for i, r in enumerate(results))
+    map_html = _build_map(results, meta["search_lat"], meta["search_lon"],
+                          radius_km, meta.get("resolved_location", location))
+    return summary + cards, map_html
 
-    cards    = "".join(format_result_card(i + 1, r) for i, r in enumerate(results))
-    map_html = build_map_html(results, meta["search_lat"], meta["search_lon"])
-    return summary + cards, results, map_html, meta.get("care_need", care_need)
 
+def do_search(query_text, radius_km, shortlist):
+    if not _data_ready:
+        msg = (_STARTUP_ERROR
+               if _STARTUP_ERROR
+               else "⏳ Data loading — please wait a moment and try again.")
+        return (f'<div style="color:{TXT_MUT};padding:16px;font-size:13px;">{msg}</div>',
+                [], "", "", shortlist, _build_shortlist_panel(shortlist))
 
-def smart_search(query_text, radius_km):
     if not query_text.strip():
         return (
-            '<p style="color:#aaa;padding:20px 0;">Enter something like '
-            '<b>"dialysis near Jaipur"</b> or <b>"emergency surgery near Patna"</b>.</p>'
-        ), [], "", ""
+            f'<div style="color:{TXT_MUT};padding:16px;font-size:13px;font-style:italic;">'
+            f'Enter something like <b>"dialysis near Jaipur"</b></div>',
+            [], "", "", shortlist, _build_shortlist_panel(shortlist),
+        )
 
     care_need, location = parse_combined_query(query_text, centroids)
     if not location:
         return (
-            f'<p style="color:#888;padding:16px 0;">Could not find a location in '
-            f'<em>"{query_text}"</em>. Try <b>"&lt;care need&gt; near &lt;city&gt;"</b>.</p>'
-        ), [], "", ""
+            f'<div style="background:#FFF8E1;border-left:3px solid #F9A825;'
+            f'padding:12px 14px;border-radius:0 6px 6px 0;font-size:13px;">'
+            f'🤖 Couldn\'t find a location in that query.<br>'
+            f'Try: <b>"dialysis near Jaipur"</b> or <b>"heart surgery near Mumbai"</b></div>',
+            [], "", "", shortlist, _build_shortlist_panel(shortlist),
+        )
+    if not care_need:
+        care_need = query_text
 
-    return run_search(location, care_need, radius_km)
+    results, meta = supervisor.run(
+        df=df, centroids=centroids,
+        care_need_query=care_need, location_query=location,
+        radius_km=radius_km,
+    )
+
+    if "error" in meta:
+        return (
+            f'<div style="color:#c00;padding:12px;font-size:13px;">{meta["error"]}</div>',
+            [], "", "", shortlist, _build_shortlist_panel(shortlist),
+        )
+
+    results_html, map_html = _render_results(results, shortlist, meta, location, radius_km)
+    return (results_html, results, map_html,
+            meta.get("care_need", care_need),
+            shortlist, _build_shortlist_panel(shortlist))
 
 
-# ---------------------------------------------------------------------------
-# Shortlist
-# ---------------------------------------------------------------------------
+def do_filter_sort(results, shortlist, filter_val, sort_val):
+    if not results:
+        return ""
+    filtered = results
+    if filter_val == "Government":
+        filtered = [r for r in results
+                    if any(w in (_safe(r.get("org_type",""))).lower()
+                           for w in ("government","govt","public","municipal","district"))]
+    elif filter_val == "Private":
+        filtered = [r for r in results
+                    if not any(w in (_safe(r.get("org_type",""))).lower()
+                               for w in ("government","govt","public","municipal","district"))]
+    if sort_val == "Best match":
+        filtered = sorted(filtered, key=lambda r: -r.get("blended_score", 0))
+    else:
+        filtered = sorted(filtered, key=lambda r: (r.get("distance_km") or 9999))
 
-def update_picker_choices(results):
-    choices = [f"{i + 1}. {r['name']}" for i, r in enumerate(results)]
-    return gr.update(choices=choices, value=None)
+    cards = "".join(_build_card(i + 1, r, shortlist) for i, r in enumerate(filtered))
+    return cards
 
 
-def add_to_shortlist(selected_label, results, shortlist, care_need):
-    if not selected_label or not results:
-        return shortlist, format_shortlist(shortlist)
-    idx = int(selected_label.split(".")[0]) - 1
-    if idx < 0 or idx >= len(results):
-        return shortlist, format_shortlist(shortlist)
-
-    candidate = results[idx]
-    if not any(s["name"] == candidate["name"] for s in shortlist):
+def do_bookmark(bm_id, results, shortlist, care_need):
+    if not bm_id or not results:
+        return shortlist, _build_shortlist_panel(shortlist), ""
+    candidate = next((r for r in results
+                      if _safe(r.get("id", r["name"])) == bm_id), None)
+    if candidate is None:
+        return shortlist, _build_shortlist_panel(shortlist), ""
+    fid = _safe(candidate.get("id", candidate["name"]))
+    already = next((i for i, s in enumerate(shortlist) if s.get("id") == fid), None)
+    if already is not None:
+        shortlist = [s for s in shortlist if s.get("id") != fid]
+    else:
         shortlist = shortlist + [{
-            "name":        candidate["name"],
-            "city":        candidate["city"],
-            "state":       candidate["state"],
-            "distance_km": candidate["distance_km"],
-            "trust":       trust_label(candidate["evidence"]),
-            "phone":       candidate.get("phone", ""),
-            "website":     candidate.get("website", ""),
+            "id": fid, "name": candidate["name"],
+            "city": candidate["city"], "state": candidate["state"],
+            "distance_km": candidate.get("distance_km"),
+            "trust": trust_label(candidate["evidence"]),
+            "phone": candidate.get("phone", ""),
+            "website": candidate.get("website", ""),
         }]
-        # Persist interaction to Delta (fire-and-forget; non-blocking)
-        feedback_store.record_save(
-            sdk_query_fn  = _sdk_query,
-            session_id    = _SESSION,
-            care_need     = care_need or "unknown",
-            facility_id   = candidate.get("id", ""),
-            facility_name = candidate["name"],
-        )
+        try:
+            feedback_store.record_save(
+                sdk_query_fn=_sdk_query, session_id=_SESSION,
+                care_need=care_need or "unknown",
+                facility_id=fid, facility_name=candidate["name"],
+            )
+        except Exception:
+            pass
+    return shortlist, _build_shortlist_panel(shortlist), ""
 
-    return shortlist, format_shortlist(shortlist)
+
+def do_remove(rm_idx, shortlist):
+    try:
+        idx = int(rm_idx)
+        shortlist = [s for i, s in enumerate(shortlist) if i != idx]
+    except (ValueError, TypeError):
+        pass
+    return shortlist, _build_shortlist_panel(shortlist), ""
 
 
-def format_shortlist(shortlist):
+def do_clear(shortlist):
+    return [], _build_shortlist_panel([])
+
+
+def do_export(shortlist):
     if not shortlist:
-        return '<p style="color:#888;font-style:italic;">No facilities saved yet.</p>'
-    cards = []
-    for s in shortlist:
-        trust_text = s.get("trust", "")
-        style, label = _TRUST_STYLES.get(trust_text, ("background:#666;color:#fff;", trust_text))
-        dist_str = f" · {s['distance_km']} km" if s.get("distance_km") is not None else ""
-        contact = " &nbsp;·&nbsp; ".join(
-            filter(None, [_phone_link(s.get("phone", "")),
-                          _website_link(s.get("website", ""))])
-        )
-        cards.append(
-            f'<div style="border:1px solid #e2e8f0;border-radius:8px;padding:12px;'
-            f'margin:6px 0;background:#fff;">'
-            f'<div style="display:flex;justify-content:space-between;align-items:center;'
-            f'flex-wrap:wrap;gap:6px;">'
-            f'<div><div style="font-weight:600;color:#0B2026;">{s["name"]}</div>'
-            f'<div style="font-size:12px;color:#666;">📍 {s["city"]}, {s["state"]}{dist_str}</div>'
-            f'</div>'
-            f'<span style="padding:3px 10px;border-radius:16px;font-size:11px;'
-            f'font-weight:600;{style}">{label}</span></div>'
-            + (f'<div style="margin-top:6px;font-size:12px;">{contact}</div>' if contact else "")
-            + "</div>"
-        )
-    return "".join(cards)
+        return None
+    return _export_csv(shortlist)
 
+# ---------------------------------------------------------------------------
+# CSS
+# ---------------------------------------------------------------------------
 
-def clear_shortlist():
-    return [], format_shortlist([])
-
+CSS = f"""
+* {{ box-sizing: border-box; }}
+body, .gradio-container {{
+  background: {BG_PAGE} !important;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  margin: 0 !important; padding: 0 !important;
+}}
+.gradio-container > .main {{ padding: 0 !important; }}
+footer {{ display: none !important; }}
+/* Topbar */
+#suvidha-topbar {{
+  background: {BG_CARD}; border-bottom: 1px solid {BORDER};
+  padding: 10px 20px; display: flex; align-items: center; gap: 14px;
+}}
+/* Search inputs — minimal */
+#where-box textarea, #need-box textarea,
+#where-box input, #need-box input {{
+  border: none !important; background: transparent !important;
+  box-shadow: none !important; padding: 2px 4px !important;
+  font-size: 13px !important; color: {TXT_PRI} !important;
+  resize: none !important; min-height: 0 !important;
+}}
+#where-box label, #need-box label {{
+  font-size: 9px !important; font-weight: 600 !important;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  color: {TXT_MUT} !important; margin-bottom: 0 !important;
+}}
+/* Search pill wrapper */
+.search-pill {{
+  display: flex; align-items: center; flex: 1;
+  border: 1.5px solid #B4B2A9; border-radius: 40px;
+  background: {BG_CARD}; overflow: hidden; max-width: 640px;
+}}
+.pill-section {{
+  flex: 1; padding: 6px 14px; min-width: 0;
+  border-right: 0.5px solid {BORDER};
+}}
+.pill-section:last-of-type {{ border-right: none; }}
+/* Search button */
+#search-btn button {{
+  width: 36px !important; height: 36px !important;
+  border-radius: 50% !important; background: {GRN_MID} !important;
+  color: #fff !important; border: none !important;
+  font-size: 16px !important; padding: 0 !important;
+  min-width: 0 !important;
+}}
+/* Filter chips */
+.filter-chip button {{
+  border-radius: 20px !important; padding: 4px 14px !important;
+  font-size: 12px !important; border: 1px solid {BORDER_G} !important;
+  background: {BG_CARD} !important; color: {GRN_MID} !important;
+  min-width: 0 !important;
+}}
+.filter-chip.active button {{
+  background: {GRN_MID} !important; color: {GRN_PALE} !important;
+  border-color: {GRN_MID} !important;
+}}
+/* Sort */
+#sort-radio .wrap {{ flex-direction: row !important; gap: 8px !important; }}
+#sort-radio label span {{ font-size: 12px !important; color: {TXT_SEC} !important; }}
+/* Results column */
+#results-col {{ background: {BG_PAGE}; padding: 14px 20px; overflow-y: auto; }}
+/* Right column */
+#right-col {{ width: 320px; min-width: 320px; flex-shrink: 0; }}
+/* Radius slider */
+#radius-slider .wrap {{ gap: 6px !important; }}
+/* Filter bar */
+#filter-bar {{
+  background: {BG_CARD}; border-bottom: 1px solid {BORDER};
+  padding: 8px 20px;
+}}
+"""
 
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
 
-CSS = """
-body, .gradio-container {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
-}
-"""
+with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS) as demo:
 
-with gr.Blocks(title="Referral Copilot", css=CSS) as demo:
+    results_state   = gr.State([])
+    shortlist_state = gr.State([])
+    care_need_state = gr.State("")
 
-    gr.HTML(
-        f'<div style="background:linear-gradient(135deg,#0B2026 0%,#1a3a45 100%);'
-        f'border-radius:10px;padding:20px 24px;margin-bottom:8px;">'
-        f'<div style="font-size:26px;font-weight:700;color:#F9F7F4;margin-bottom:6px;">🏥 Referral Copilot</div>'
-        f'<div style="color:#EEEDE9;font-size:13px;line-height:1.5;opacity:0.85;">'
-        f'Enter a care need and location to get a ranked shortlist of Indian healthcare facilities — '
-        f'with the evidence behind each match, what\'s missing, and what to verify before referring a patient.'
-        f'</div>'
-        f'<div style="font-size:11px;color:#EEEDE9;opacity:0.5;margin-top:8px;">'
-        f'{"⏳ Loading data…" if not _data_ready else f"{_total_facilities:,} facilities · {_total_cities:,} cities · {_total_locations:,} searchable locations"}'
-        f' &nbsp;·&nbsp; DAIS for Good Hackathon 2026'
-        f'</div></div>'
-        + (f'<div style="background:#fff0f0;border:1px solid #c00;border-radius:8px;'
-           f'padding:12px 16px;margin-top:8px;font-family:monospace;font-size:11px;'
-           f'color:#c00;white-space:pre-wrap;overflow-x:auto;max-height:300px;overflow-y:auto;">'
-           f'&#9888; Startup error:\n{_STARTUP_ERROR}</div>' if _STARTUP_ERROR else "")
-    )
+    # ── Topbar ────────────────────────────────────────────────────────────
+    with gr.Row(elem_id="suvidha-topbar"):
+        # Logo
+        gr.HTML(f"""
+<div style="display:flex;align-items:center;gap:10px;flex-shrink:0;">
+  <div style="width:32px;height:32px;background:{GRN_MID};border-radius:8px;
+              display:flex;align-items:center;justify-content:center;font-size:16px;">
+    📍</div>
+  <div>
+    <div style="font-size:16px;font-weight:500;color:{GRN_DK};line-height:1.2;">Suvidha</div>
+    <div style="font-size:11px;color:{GRN_LT};line-height:1.2;">सुविधा · Healthcare Referrals</div>
+  </div>
+</div>""")
 
-    with gr.Row():
-        search_box = gr.Textbox(
-            label="What do you need, and where?",
-            placeholder='"dialysis near Jaipur"  or  "emergency surgery near Patna"',
-            scale=5, container=False,
+        # Search pill — three sections
+        with gr.Group(elem_classes=["search-pill"]):
+            with gr.Column(elem_classes=["pill-section"], min_width=0):
+                where_box = gr.Textbox(label="WHERE", placeholder="City or district",
+                                       elem_id="where-box", lines=1, show_label=True,
+                                       container=False)
+            with gr.Column(elem_classes=["pill-section"], min_width=0):
+                need_box  = gr.Textbox(label="CARE NEED", placeholder="e.g. dialysis",
+                                       elem_id="need-box", lines=1, show_label=True,
+                                       container=False)
+            with gr.Column(elem_classes=["pill-section"], min_width=0, scale=0):
+                radius_slider = gr.Slider(minimum=10, maximum=500, value=150, step=10,
+                                          label="RADIUS (km)", elem_id="radius-slider",
+                                          container=False)
+
+        search_btn = gr.Button("🔍", elem_id="search-btn", scale=0, min_width=36)
+
+        # Saved count
+        saved_count_html = gr.HTML(
+            f'<div style="background:{GRN_PALE};border:0.5px solid {BORDER_G};'
+            f'border-radius:20px;padding:5px 12px;font-size:12px;color:{GRN_MID};'
+            f'white-space:nowrap;flex-shrink:0;">🔖 0 saved</div>',
+            elem_id="saved-count",
         )
-        search_btn = gr.Button("Search", variant="primary", scale=1, min_width=90)
 
-    radius_input = gr.Slider(
-        label="Search radius (km)", minimum=10, maximum=500, value=150, step=10
-    )
+    # Also support free-text combined search (smart parse)
+    with gr.Row(elem_id="smart-row",
+                visible=True):
+        smart_box = gr.Textbox(
+            placeholder='"dialysis near Jaipur"  or  "heart surgery near Mumbai"',
+            label="Or search naturally", scale=5, container=True,
+        )
+        smart_btn = gr.Button("Search", variant="primary", scale=1, min_width=80)
 
     gr.Examples(
-        examples=[
-            "dialysis near Jaipur",
-            "emergency surgery near Patna",
-            "cardiology near Gurgaon",
-            "ophthalmology near Hyderabad",
-            "oncology near Delhi",
-            "maternity near Chennai",
-        ],
-        inputs=[search_box],
-        label="Example searches",
+        examples=["dialysis near Jaipur", "emergency surgery near Patna",
+                  "cardiology near Gurgaon", "oncology near Delhi",
+                  "maternity near Chennai", "ophthalmology near Hyderabad"],
+        inputs=[smart_box], label="Quick examples",
     )
 
-    results_output  = gr.HTML(
-        '<p style="color:#aaa;padding:20px 0;font-style:italic;">Results will appear here.</p>'
-    )
-    results_state   = gr.State([])
-    care_need_state = gr.State("")    # tracks care_need across search → shortlist save
-    map_output      = gr.HTML()
+    # ── Filter + Sort bar ─────────────────────────────────────────────────
+    with gr.Row(elem_id="filter-bar"):
+        filter_all  = gr.Button("All",        elem_classes=["filter-chip", "active"], scale=0)
+        filter_govt = gr.Button("Government", elem_classes=["filter-chip"],           scale=0)
+        filter_priv = gr.Button("Private",    elem_classes=["filter-chip"],           scale=0)
+        gr.HTML('<div style="flex:1;"></div>')
+        sort_radio  = gr.Radio(["Nearest first", "Best match"], value="Nearest first",
+                               label="Sort", elem_id="sort-radio", container=False,
+                               scale=0)
 
-    gr.Markdown("---\n## Shortlist")
-    with gr.Row():
-        candidate_picker = gr.Dropdown(label="Select a result to save", choices=[], scale=4)
-        save_btn  = gr.Button("Save to shortlist", scale=1)
-        clear_btn = gr.Button("Clear", scale=1)
+    filter_state = gr.State("All")
+    sort_state   = gr.State("Nearest first")
 
-    shortlist_output = gr.HTML('<p style="color:#888;font-style:italic;">No facilities saved yet.</p>')
-    shortlist_state  = gr.State([])
+    # ── Main content: two-column ──────────────────────────────────────────
+    with gr.Row(equal_height=False):
+        # Left — results
+        with gr.Column(scale=3, elem_id="results-col"):
+            results_html = gr.HTML(
+                f'<div style="color:{TXT_MUT};font-size:13px;font-style:italic;'
+                f'padding:20px 0;">Search above to see facilities.</div>'
+            )
 
-    def _search(q, r):
-        return smart_search(q, r)
+        # Right — map + shortlist
+        with gr.Column(scale=1, min_width=320, elem_id="right-col"):
+            map_html      = gr.HTML()
+            shortlist_html = gr.HTML(_build_shortlist_panel([]))
+            export_btn    = gr.Button("⬇ Export shortlist", variant="secondary")
+            export_file   = gr.File(label="Download", visible=False)
+
+    # Hidden elements for JS bookmark / remove
+    bm_id_box  = gr.Textbox(value="", visible=False, elem_id="bm-id-box")
+    bm_trigger = gr.Button("bm",      visible=False, elem_id="bm-trigger")
+    rm_idx_box = gr.Textbox(value="", visible=False, elem_id="rm-idx-box")
+    rm_trigger = gr.Button("rm",      visible=False, elem_id="rm-trigger")
+    clear_trigger = gr.Button("clr",  visible=False, elem_id="clear-trigger")
+
+    # ── Event wiring ──────────────────────────────────────────────────────
+
+    def _combined_search(where, need, radius, shortlist):
+        query = f"{need} near {where}" if where and need else (where or need or "")
+        return do_search(query, radius, shortlist)
+
+    def _smart_search(query, radius, shortlist):
+        return do_search(query, radius, shortlist)
+
+    _SEARCH_OUTS = [results_html, results_state, map_html,
+                    care_need_state, shortlist_state, shortlist_html]
 
     search_btn.click(
-        _search,
-        [search_box, radius_input],
-        [results_output, results_state, map_output, care_need_state],
+        _combined_search,
+        [where_box, need_box, radius_slider, shortlist_state],
+        _SEARCH_OUTS,
     )
-    search_box.submit(
-        _search,
-        [search_box, radius_input],
-        [results_output, results_state, map_output, care_need_state],
+    where_box.submit(
+        _combined_search,
+        [where_box, need_box, radius_slider, shortlist_state],
+        _SEARCH_OUTS,
     )
-    results_state.change(update_picker_choices, [results_state], [candidate_picker])
-    save_btn.click(
-        add_to_shortlist,
-        [candidate_picker, results_state, shortlist_state, care_need_state],
-        [shortlist_state, shortlist_output],
+    need_box.submit(
+        _combined_search,
+        [where_box, need_box, radius_slider, shortlist_state],
+        _SEARCH_OUTS,
     )
-    clear_btn.click(clear_shortlist, outputs=[shortlist_state, shortlist_output])
+    smart_btn.click(
+        _smart_search,
+        [smart_box, radius_slider, shortlist_state],
+        _SEARCH_OUTS,
+    )
+    smart_box.submit(
+        _smart_search,
+        [smart_box, radius_slider, shortlist_state],
+        _SEARCH_OUTS,
+    )
+
+    # Filter/sort
+    def _set_filter(val, results, shortlist, sort_val):
+        cards = do_filter_sort(results, shortlist, val, sort_val)
+        return val, cards
+
+    filter_all.click(
+        lambda r, sl, sv: _set_filter("All", r, sl, sv),
+        [results_state, shortlist_state, sort_state],
+        [filter_state, results_html],
+    )
+    filter_govt.click(
+        lambda r, sl, sv: _set_filter("Government", r, sl, sv),
+        [results_state, shortlist_state, sort_state],
+        [filter_state, results_html],
+    )
+    filter_priv.click(
+        lambda r, sl, sv: _set_filter("Private", r, sl, sv),
+        [results_state, shortlist_state, sort_state],
+        [filter_state, results_html],
+    )
+    sort_radio.change(
+        lambda sv, r, sl, fv: (sv, do_filter_sort(r, sl, fv, sv)),
+        [sort_radio, results_state, shortlist_state, filter_state],
+        [sort_state, results_html],
+    )
+
+    # Bookmark
+    def _bookmark(bm_id, results, shortlist, care_need):
+        sl, sl_html, _ = do_bookmark(bm_id, results, shortlist, care_need)
+        n = len(sl)
+        saved_html = (
+            f'<div style="background:{GRN_PALE};border:0.5px solid {BORDER_G};'
+            f'border-radius:20px;padding:5px 12px;font-size:12px;color:{GRN_MID};'
+            f'white-space:nowrap;flex-shrink:0;">🔖 {n} saved</div>'
+        )
+        # Re-render results with updated bookmark state
+        cards = "".join(_build_card(i + 1, r, sl)
+                        for i, r in enumerate(results))
+        return sl, sl_html, "", saved_html, cards
+
+    bm_trigger.click(
+        _bookmark,
+        [bm_id_box, results_state, shortlist_state, care_need_state],
+        [shortlist_state, shortlist_html, bm_id_box, saved_count_html, results_html],
+    )
+
+    # Remove from shortlist
+    def _remove(rm_idx, shortlist):
+        sl, sl_html, _ = do_remove(rm_idx, shortlist)
+        n = len(sl)
+        saved_html = (
+            f'<div style="background:{GRN_PALE};border:0.5px solid {BORDER_G};'
+            f'border-radius:20px;padding:5px 12px;font-size:12px;color:{GRN_MID};'
+            f'white-space:nowrap;flex-shrink:0;">🔖 {n} saved</div>'
+        )
+        return sl, sl_html, "", saved_html
+
+    rm_trigger.click(
+        _remove,
+        [rm_idx_box, shortlist_state],
+        [shortlist_state, shortlist_html, rm_idx_box, saved_count_html],
+    )
+
+    clear_trigger.click(
+        lambda sl: ([],
+                    _build_shortlist_panel([]),
+                    f'<div style="background:{GRN_PALE};border:0.5px solid {BORDER_G};'
+                    f'border-radius:20px;padding:5px 12px;font-size:12px;color:{GRN_MID};'
+                    f'white-space:nowrap;flex-shrink:0;">🔖 0 saved</div>'),
+        [shortlist_state],
+        [shortlist_state, shortlist_html, saved_count_html],
+    )
+
+    export_btn.click(do_export, [shortlist_state], [export_file])
+    export_btn.click(lambda: gr.update(visible=True), outputs=[export_file])
 
 
 if __name__ == "__main__":

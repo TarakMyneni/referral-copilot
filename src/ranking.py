@@ -25,24 +25,32 @@ Query: {query}
 
 def _llm_parse(text):
     """Use Databricks Foundation Model API to extract care_need + location."""
-    import json
+    import json, os, requests
     try:
-        from databricks.sdk import WorkspaceClient
-        w = WorkspaceClient()
-        response = w.serving_endpoints.query(
-            name="databricks-meta-llama-3-3-70b-instruct",
-            messages=[{"role": "user", "content": _LLM_PROMPT.format(query=text)}],
-            max_tokens=60,
-            temperature=0,
+        host  = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
+        token = os.environ.get("DATABRICKS_TOKEN", "")
+        if not host or not token:
+            return text, ""
+
+        resp = requests.post(
+            f"{host}/serving-endpoints/databricks-meta-llama-3-3-70b-instruct/invocations",
+            headers={"Authorization": f"Bearer {token}",
+                     "Content-Type": "application/json"},
+            json={
+                "messages": [{"role": "user",
+                              "content": _LLM_PROMPT.format(query=text)}],
+                "max_tokens": 60,
+                "temperature": 0,
+            },
+            timeout=10,
         )
-        raw = response.choices[0].message.content.strip()
-        # Extract JSON even if wrapped in markdown code block
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
         json_match = re.search(r"\{.*?\}", raw, re.DOTALL)
         if json_match:
-            parsed = json.loads(json_match.group())
+            parsed    = json.loads(json_match.group())
             care_need = parsed.get("care_need", "").strip()
             location  = parsed.get("location",  "").strip()
-            print(f"[LLM] Parsed '{text}' → care_need='{care_need}' location='{location}'")
+            print(f"[LLM] '{text}' → care_need='{care_need}' location='{location}'")
             return care_need, location
     except Exception as e:
         print(f"[LLM] Parse failed: {e}")
