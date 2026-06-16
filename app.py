@@ -163,25 +163,51 @@ def _load_geo_cache():
             CREATE TABLE IF NOT EXISTS {GEO_CACHE_TABLE} (
                 query_lower STRING,
                 lat         DOUBLE,
-                lon         DOUBLE
+                lon         DOUBLE,
+                city_name   STRING
             )
         """)
-        cols, rows = _sdk_query(f"SELECT query_lower, lat, lon FROM {GEO_CACHE_TABLE}")
-        entries = [(r[0], r[1], r[2]) for r in rows if r[1] is not None and r[2] is not None]
+    except Exception:
+        pass
+    try:
+        # Try loading with city_name; if column missing (old table), fall back
+        try:
+            cols, rows = _sdk_query(
+                f"SELECT query_lower, lat, lon, city_name FROM {GEO_CACHE_TABLE}"
+            )
+            entries = [
+                (r[0], r[1], r[2], r[3] or "")
+                for r in rows if r[1] is not None and r[2] is not None
+            ]
+        except Exception:
+            cols, rows = _sdk_query(
+                f"SELECT query_lower, lat, lon FROM {GEO_CACHE_TABLE}"
+            )
+            entries = [
+                (r[0], r[1], r[2], "")
+                for r in rows if r[1] is not None and r[2] is not None
+            ]
+            try:
+                _sdk_query(
+                    f"ALTER TABLE {GEO_CACHE_TABLE} ADD COLUMN city_name STRING"
+                )
+            except Exception:
+                pass
         preload_nominatim_cache(entries)
         print(f"[App] Geo cache loaded: {len(entries)} cities pre-cached")
     except Exception as e:
         print(f"[App] Geo cache skipped: {e}")
 
 
-def _save_geo_cache_entry(query_lower, lat, lon):
+def _save_geo_cache_entry(query_lower, lat, lon, city_name=""):
     """Write a new Nominatim result to Delta in a background thread."""
     def _write():
         try:
             q = query_lower.replace("'", "''")
+            c = (city_name or "").replace("'", "''")
             _sdk_query(f"""
-                INSERT INTO {GEO_CACHE_TABLE} (query_lower, lat, lon)
-                SELECT '{q}', {lat}, {lon}
+                INSERT INTO {GEO_CACHE_TABLE} (query_lower, lat, lon, city_name)
+                SELECT '{q}', {lat}, {lon}, '{c}'
                 WHERE NOT EXISTS (
                     SELECT 1 FROM {GEO_CACHE_TABLE} WHERE query_lower = '{q}'
                 )

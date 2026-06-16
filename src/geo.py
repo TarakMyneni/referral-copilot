@@ -27,16 +27,25 @@ def set_geo_save_callback(fn):
 
 
 def preload_nominatim_cache(entries):
-    """Pre-populate in-process cache from DB: entries = [(query_lower, lat, lon), ...]"""
-    for q, lat, lon in entries:
-        _nominatim_cache[(q, False)] = (float(lat), float(lon))
+    """
+    Pre-populate in-process cache from DB.
+    entries: [(query_lower, lat, lon), ...] or [(query_lower, lat, lon, city_name), ...]
+    Cache stores (lat, lon, city_name) 3-tuples.
+    """
+    for entry in entries:
+        q    = entry[0]
+        lat  = float(entry[1])
+        lon  = float(entry[2])
+        city = entry[3].lower().strip() if len(entry) > 3 and entry[3] else ""
+        _nominatim_cache[(q, False)] = (lat, lon, city)
 
 
 def _nominatim_lookup(raw_query: str, is_pin: bool = False):
     """
     Geocode via OSM Nominatim (free, no API key).
-    Returns (lat, lon) or None.
-    Results are cached in-process to avoid repeated network calls.
+    Returns (lat, lon, city_name) 3-tuple, or None.
+    city_name is the OSM address city field (lowercase), empty string for PIN lookups.
+    Results are cached in-process and optionally persisted to Delta.
     """
     cache_key = (raw_query.lower(), is_pin)
     if cache_key in _nominatim_cache:
@@ -54,11 +63,11 @@ def _nominatim_lookup(raw_query: str, is_pin: bool = False):
             }
         else:
             params = {
-                "q":            f"{raw_query}, India",
-                "format":       "json",
-                "limit":        1,
-                "countrycodes": "in",
-                "addressdetails": 0,
+                "q":              f"{raw_query}, India",
+                "format":         "json",
+                "limit":          1,
+                "countrycodes":   "in",
+                "addressdetails": 1,     # ask OSM for city/town name
             }
         resp = requests.get(
             "https://nominatim.openstreetmap.org/search",
@@ -68,15 +77,27 @@ def _nominatim_lookup(raw_query: str, is_pin: bool = False):
         )
         data = resp.json()
         if data:
-            result = (float(data[0]["lat"]), float(data[0]["lon"]))
-            print(f"[Geo] Nominatim: '{raw_query}' → {result}")
+            item = data[0]
+            lat, lon = float(item["lat"]), float(item["lon"])
+            if is_pin:
+                result = (lat, lon, "")
+            else:
+                addr = item.get("address", {})
+                # Try address fields from most-specific to least
+                city_name = (
+                    addr.get("city") or addr.get("town") or
+                    addr.get("village") or addr.get("municipality") or
+                    addr.get("county") or ""
+                ).lower().strip()
+                result = (lat, lon, city_name)
+                print(f"[Geo] Nominatim: '{raw_query}' → ({lat},{lon}) city='{city_name}'")
     except Exception as exc:
         print(f"[Geo] Nominatim failed for '{raw_query}': {exc}")
 
     _nominatim_cache[cache_key] = result
     if result and not is_pin and _geo_db_save_callback:
         try:
-            _geo_db_save_callback(raw_query.lower(), result[0], result[1])
+            _geo_db_save_callback(raw_query.lower(), result[0], result[1], result[2])
         except Exception:
             pass
     return result
@@ -211,9 +232,9 @@ def resolve_location(query_location, centroids):
         if key in centroids:
             c = centroids[key]
             return c["lat"], c["lon"], key, "exact"
-        coords = _nominatim_lookup(key, is_pin=True)
-        if coords:
-            return coords[0], coords[1], key, "exact"
+        nom = _nominatim_lookup(key, is_pin=True)
+        if nom:
+            return nom[0], nom[1], key, "exact"
         return None, None, None, "not_found"
 
     # City names only (exclude PIN-code keys which are pure digits)
@@ -221,15 +242,19 @@ def resolve_location(query_location, centroids):
 
     # --- 1. Nominatim (primary) ---
     # Handles old names (Bombay→Mumbai, Calcutta→Kolkata), neighborhoods,
-    # districts, and any Indian place not in the facility dataset.
-    # Results are cached in-process and persisted to Delta between restarts.
-    coords = _nominatim_lookup(raw)
-    if coords:
-        # Nearest centroid gives the canonical city name from our dataset.
-        canonical = _nearest_centroid(coords[0], coords[1], city_centroids)
-        matched_name = canonical if canonical else key
-        print(f"[Geo] Nominatim: '{raw}' → {coords} → canonical='{matched_name}'")
-        return coords[0], coords[1], matched_name, "fuzzy"
+    # and any Indian place. addressdetails=1 gives us the OSM city name directly.
+    nom = _nominatim_lookup(raw)
+    if nom:
+        lat, lon, nom_city = nom
+        # Priority A: OSM address city name matches a centroid key → most reliable
+        if nom_city and nom_city in city_centroids:
+            canonical = nom_city
+        # Priority B: nearest centroid (geometric fallback for naming mismatches)
+        else:
+            canonical = _nearest_centroid(lat, lon, city_centroids)
+        matched_name = canonical if canonical else (nom_city or key)
+        print(f"[Geo] '{raw}' → canonical='{matched_name}'")
+        return lat, lon, matched_name, "fuzzy"
 
     # --- Fallback: centroid-based lookup (Nominatim unavailable) ---
 
