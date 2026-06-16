@@ -216,6 +216,7 @@ state_centroids AS (
 resolved AS (
   SELECT
     d.unique_id, d.name, d.city, d.state, d.postcode,
+    pm.district, pm.division, pm.region,
     d.organization_type, d.phone, d.website,
     d.year_established, d.num_doctors, d.capacity,
     d.description, d.specialties, d.capability,
@@ -266,6 +267,7 @@ resolved AS (
 -- ALL records preserved; geo_valid=false marks the ones with no resolvable coords
 SELECT
   unique_id, name, city, state, postcode,
+  district, division, region,
   latitude, longitude,
   geo_source,
   (geo_source != 'UNKNOWN')   AS geo_valid,
@@ -303,12 +305,17 @@ SELECT
   TRY_CAST(longitude AS DOUBLE)         AS longitude
 FROM databricks_virtue_foundation_dataset_dais_2026.virtue_foundation_dataset.india_post_pincode_directory
 WHERE
-  TRY_CAST(latitude  AS DOUBLE) IS NOT NULL
-  AND TRY_CAST(longitude AS DOUBLE) IS NOT NULL
-  AND district IS NOT NULL
+  -- Keep ALL rows — hierarchy (postcode→district→division→region→state) is
+  -- useful even when coordinates are missing. lat/lon will be NULL for those rows;
+  -- centroid computations filter NULLs before averaging.
+  district IS NOT NULL
   AND UPPER(TRIM(district)) NOT IN ('', 'NA', 'NULL')
-  AND TRY_CAST(latitude  AS DOUBLE) BETWEEN 6.0  AND 38.0
-  AND TRY_CAST(longitude AS DOUBLE) BETWEEN 67.0 AND 98.5;
+  AND CASE
+        WHEN TRY_CAST(latitude AS DOUBLE) IS NULL THEN TRUE   -- keep, no coords
+        WHEN TRY_CAST(latitude AS DOUBLE) NOT BETWEEN 6.0 AND 38.0  THEN FALSE  -- drop bad coords
+        WHEN TRY_CAST(longitude AS DOUBLE) NOT BETWEEN 67.0 AND 98.5 THEN FALSE
+        ELSE TRUE
+      END;
 
 
 -- =============================================================================

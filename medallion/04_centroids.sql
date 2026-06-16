@@ -18,14 +18,28 @@ AS
 
 -- City centroids from facilities (most precise)
 SELECT
-  'city'                        AS level,
-  LOWER(TRIM(city))             AS name_key,
+  'city'                         AS level,
+  LOWER(TRIM(city))              AS name_key,
   AVG(CAST(latitude  AS DOUBLE)) AS lat,
   AVG(CAST(longitude AS DOUBLE)) AS lon
 FROM mediguide.referral_copilot.facilities_silver
 WHERE latitude IS NOT NULL AND longitude IS NOT NULL
   AND geo_valid = true
 GROUP BY LOWER(TRIM(city))
+
+UNION ALL
+
+-- District centroids from facilities (supplements pincode data)
+SELECT
+  'district'                     AS level,
+  LOWER(TRIM(district))          AS name_key,
+  AVG(CAST(latitude  AS DOUBLE)) AS lat,
+  AVG(CAST(longitude AS DOUBLE)) AS lon
+FROM mediguide.referral_copilot.facilities_silver
+WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+  AND geo_valid = true
+  AND district IS NOT NULL
+GROUP BY LOWER(TRIM(district))
 
 UNION ALL
 
