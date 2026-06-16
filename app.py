@@ -92,18 +92,31 @@ def _load_pincode():
 # Startup: load data, build indexes, wire feedback
 # ---------------------------------------------------------------------------
 
-df           = _load_silver()
-_pincode_df  = _load_pincode()
+_STARTUP_ERROR = None
 
-_facility_centroids = build_city_centroids(df, COLUMNS["city"], COLUMNS["latitude"], COLUMNS["longitude"])
-_pincode_centroids  = build_pincode_centroids(_pincode_df)
-centroids = {**_pincode_centroids, **_facility_centroids}  # facility wins on conflict
+try:
+    df          = _load_silver()
+    _pincode_df = _load_pincode()
 
-feedback_store.load(_sdk_query)   # warm up boost cache from Delta
+    _facility_centroids = build_city_centroids(df, COLUMNS["city"], COLUMNS["latitude"], COLUMNS["longitude"])
+    _pincode_centroids  = build_pincode_centroids(_pincode_df)
+    centroids = {**_pincode_centroids, **_facility_centroids}
 
-_total_facilities = len(df)
-_total_cities     = df[COLUMNS["city"]].dropna().nunique()
-_total_locations  = len(centroids)
+    feedback_store.load(_sdk_query)
+
+    _total_facilities = len(df)
+    _total_cities     = df[COLUMNS["city"]].dropna().nunique()
+    _total_locations  = len(centroids)
+
+except Exception as _e:
+    import traceback
+    _STARTUP_ERROR = traceback.format_exc()
+    print(f"[App] STARTUP FAILED:\n{_STARTUP_ERROR}")
+    df                  = pd.DataFrame()
+    centroids           = {}
+    _total_facilities   = 0
+    _total_cities       = 0
+    _total_locations    = 0
 
 
 # ---------------------------------------------------------------------------
@@ -445,6 +458,11 @@ with gr.Blocks(title="Referral Copilot", css=CSS) as demo:
         f'{_total_facilities:,} facilities &nbsp;·&nbsp; {_total_cities:,} cities &nbsp;·&nbsp; '
         f'{_total_locations:,} searchable locations &nbsp;·&nbsp; DAIS for Good Hackathon 2026'
         f'</div></div>'
+        + (f'<div style="background:#fff0f0;border:1px solid #c00;border-radius:8px;'
+           f'padding:12px 16px;margin-top:8px;font-family:monospace;font-size:12px;'
+           f'color:#c00;white-space:pre-wrap;">'
+           f'⚠ Startup error — check warehouse permissions and that Silver tables exist:\n\n'
+           f'{_STARTUP_ERROR}</div>' if _STARTUP_ERROR else "")
     )
 
     with gr.Row():
