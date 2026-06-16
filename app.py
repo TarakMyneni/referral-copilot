@@ -339,22 +339,7 @@ _RESET_JS = (
     "if(b)b.click();}"
 )
 
-# Supported UI languages — code → (display name, example placeholder)
-_LANGUAGES = {
-    "English":    ("English",    "e.g. dialysis near Jaipur"),
-    "Hindi":      ("हिंदी",      "जैसे: जयपुर के पास डायलिसिस"),
-    "Telugu":     ("తెలుగు",    "ఉదా: హైదరాబాద్ దగ్గర కంటి చికిత్స"),
-    "Tamil":      ("தமிழ்",     "எ.கா: சென்னை அருகே கண் மருத்துவம்"),
-    "Kannada":    ("ಕನ್ನಡ",    "ಉದಾ: ಬೆಂಗಳೂರು ಬಳಿ ಡಯಾಲಿಸಿಸ್"),
-    "Bengali":    ("বাংলা",     "যেমন: কলকাতার কাছে ডায়ালিসিস"),
-    "Marathi":    ("मराठी",     "उदा: मुंबईजवळ डायलिसिस"),
-    "Malayalam":  ("മലയാളം",  "ഉദാ: കൊച്ചിക്ക് സമീപം ഡയാലിസിസ്"),
-    "Gujarati":   ("ગુજરાતી",   "ઉ.દા: અમદાવાદ નજીક ડાયાલિસિસ"),
-    "Odia":       ("ଓଡ଼ିଆ",   "ଉ.ଦା: ଭୁବନେଶ୍ୱର ନିକଟ ଡାଏଲିସିସ"),
-}
-
 # Inline search action — reads vi-query / vi-radius, sets bridge, clicks search.
-# Language is already in h-lang bridge (set by the language chip onclick directly).
 _JS_SEARCH_INLINE = (
     "(function(){"
     "var inp=document.getElementById('vi-query');"
@@ -514,26 +499,27 @@ _GENERAL_CHECKLIST = [
 
 def _make_intake_qr_text(facility, care_need):
     """
-    Build a plain-text payload for the QR code.
-    Plain text works in ALL QR scanners and camera apps — iOS and Android
-    display it inline without opening a browser.  data:// URLs are blocked
-    by most phone cameras so we use text instead.
+    Build a mailto: URL as the QR payload.
+    mailto:?subject=...&body=... is recognised as a link by ALL phone cameras
+    (iOS and Android), opens the device email/Gmail app with pre-filled content.
+    No server, no WhatsApp dependency — works offline once the QR is displayed.
     """
+    import urllib.parse
     items = CARE_CHECKLISTS.get(care_need, _GENERAL_CHECKLIST)
     dept  = (care_need or "General").title()
-    name  = facility.get("name", "Unknown")[:60]
-    lines = [
-        "── SUVIDHA INCOMING REFERRAL ──",
-        f"Facility : {name}",
+    name  = facility.get("name", "Unknown")[:50]
+    body_lines = [
+        "SUVIDHA Incoming Referral",
+        f"Facility: {name}",
         f"Department: {dept}",
         "",
-        "Pre-admission requirements:",
+        "Documents required:",
     ]
-    for i, item in enumerate(items, 1):
-        lines.append(f"{i}. {item}")
-    lines.append("")
-    lines.append("Suvidha Healthcare Referral Copilot")
-    return "\n".join(lines)
+    for i, item in enumerate(items[:6], 1):
+        body_lines.append(f"{i}. {item}")
+    subject = f"SUVIDHA Referral – {dept}"
+    body    = "\n".join(body_lines)
+    return "mailto:?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(body)
 
 
 def _make_qr_svg(text, scale=3):
@@ -829,48 +815,6 @@ def _topbar_html(query, radius, n_saved):
 </div>"""
 
 
-def _langbar_html(active_lang="English"):
-    """Compact language-chip strip rendered above the filter bar."""
-    chips = []
-    for code, (display, _placeholder) in _LANGUAGES.items():
-        active  = code == active_lang
-        bg      = GRN_MID  if active else "#fff"
-        clr     = GRN_PALE if active else TXT_PRI
-        bdr     = GRN_MID  if active else BORDER_G
-        ph_esc  = _placeholder.replace("'", "\\'")
-        # Write directly to the h-lang Gradio bridge textbox so the value
-        # persists even when page_html re-renders (the bridge lives outside it).
-        js = (
-            f"(function(){{"
-            f"document.querySelectorAll('.sv-lang-chip').forEach(function(c){{"
-            f"c.style.background='#fff';c.style.color='{TXT_PRI}';"
-            f"c.style.borderColor='{BORDER_G}';}});"
-            f"this.style.background='{GRN_MID}';"
-            f"this.style.color='{GRN_PALE}';"
-            f"this.style.borderColor='{GRN_MID}';"
-            f"var qi=document.getElementById('vi-query');"
-            f"if(qi)qi.placeholder='{ph_esc}';"
-            f"var la=document.querySelector('#h-lang textarea,#h-lang input');"
-            f"if(la){{la.value='{code}';la.dispatchEvent(new Event('input',{{bubbles:true}}));}}"
-            f"}}).call(this);"
-        )
-        chips.append(
-            f'<button class="sv-lang-chip" onclick="{js}" '
-            f'style="background:{bg};color:{clr};border:0.5px solid {bdr};'
-            f'border-radius:16px;padding:3px 10px;font-size:11px;cursor:pointer;'
-            f'font-family:inherit;white-space:nowrap;">{display}</button>'
-        )
-    return (
-        f'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;'
-        f'padding:6px 0 2px;">'
-        f'<span style="font-size:10px;color:{TXT_MUT};font-weight:600;'
-        f'text-transform:uppercase;letter-spacing:0.4px;white-space:nowrap;'
-        f'margin-right:2px;">Language:</span>'
-        + "".join(chips)
-        + f'</div>'
-    )
-
-
 def _filterbar_html(filter_val, sort_val, n_results):
     def chip(label, val, count=None):
         active = filter_val == val
@@ -1026,7 +970,7 @@ def _card_html(rank, r, shortlist, compare=None, search_lat=None, search_lon=Non
     # Checklist button
     chk_onclick = _jtap(_CHKA, "'" + safe_fid + "'", "h-chk-btn")
 
-    # Directions: from search city centre (demo-safe — no live GPS needed)
+    # Directions + nearby pharmacies — both use the hospital's own lat/lon
     lat_v, lon_v = r.get("lat"), r.get("lon")
     if lat_v and lon_v:
         if search_lat and search_lon:
@@ -1037,7 +981,7 @@ def _card_html(rank, r, shortlist, compare=None, search_lat=None, search_lon=Non
         else:
             dir_url = f"https://www.google.com/maps/dir/?api=1&destination={lat_v},{lon_v}"
         dir_html = (
-            f'<a href="{dir_url}" target="_blank" title="Get directions from search location"'
+            f'<a href="{dir_url}" target="_blank" title="Get directions to this hospital"'
             f' style="width:30px;height:30px;border-radius:50%;border:0.5px solid {BORDER};'
             f'background:{BG_CARD};display:inline-flex;align-items:center;'
             f'justify-content:center;flex-shrink:0;text-decoration:none;">'
@@ -1045,8 +989,20 @@ def _card_html(rank, r, shortlist, compare=None, search_lat=None, search_lon=Non
             f' stroke-width="2" stroke-linecap="round">'
             f'<polygon points="3 11 22 2 13 21 11 13 3 11"/></svg></a>'
         )
+        pharm_url  = f"https://www.google.com/maps/search/pharmacy/@{lat_v},{lon_v},15z"
+        pharm_html = (
+            f'<a href="{pharm_url}" target="_blank" title="Find pharmacies near this hospital"'
+            f' style="width:30px;height:30px;border-radius:50%;border:0.5px solid {BORDER};'
+            f'background:{BG_CARD};display:inline-flex;align-items:center;'
+            f'justify-content:center;flex-shrink:0;text-decoration:none;">'
+            f'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="{TXT_SEC}"'
+            f' stroke-width="2" stroke-linecap="round">'
+            f'<rect x="3" y="3" width="18" height="18" rx="2"/>'
+            f'<path d="M9 12h6M12 9v6"/></svg></a>'
+        )
     else:
-        dir_html = ""
+        dir_html   = ""
+        pharm_html = ""
 
     sem_pill = ""
     if r.get("sem_score", 0) > 0:
@@ -1113,6 +1069,7 @@ def _card_html(rank, r, shortlist, compare=None, search_lat=None, search_lon=Non
       <div style="display:flex;gap:12px;flex-wrap:wrap;min-width:0;">{footer_links}</div>
       <div style="display:flex;align-items:center;gap:4px;flex-shrink:0;">
         {dir_html}
+        {pharm_html}
         <button onclick="{cmp_onclick}" title="{'Remove from comparison' if in_compare else 'Add to comparison'}"
           style="width:30px;height:30px;border-radius:50%;border:0.5px solid {cmp_bdr};
                  background:{cmp_bg};cursor:pointer;display:flex;align-items:center;
@@ -1174,24 +1131,9 @@ def _map_html(results, lat, lon, radius_km, location_name):
         f'font-size:11px;color:{TXT_SEC};border:0.5px solid {BORDER};font-family:inherit;">'
         f'{location_name} · {n} facilities · {radius_km} km radius</div>'
     )
-    # Pharmacy shortcut — top-right corner overlay on the map
-    pharm_url     = f"https://www.google.com/maps/search/pharmacy/@{lat},{lon},14z"
-    pharm_overlay = (
-        f'<a href="{pharm_url}" target="_blank" '
-        f'style="position:absolute;top:8px;right:8px;z-index:999;'
-        f'background:rgba(255,255,255,0.93);padding:4px 9px;border-radius:6px;'
-        f'font-size:11px;color:{GRN_MID};border:0.5px solid {BORDER_G};'
-        f'text-decoration:none;font-family:inherit;display:flex;align-items:center;gap:4px;">'
-        f'<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="{GRN_MID}"'
-        f' stroke-width="2" stroke-linecap="round">'
-        f'<rect x="3" y="3" width="18" height="18" rx="2"/>'
-        f'<path d="M9 12h6M12 9v6"/></svg>'
-        f'Pharmacies &#8599;</a>'
-    )
     return (
         f'<div style="position:relative;width:100%;height:100%;min-height:260px;">'
         f'{label}'
-        f'{pharm_overlay}'
         f'<iframe src="data:text/html;base64,{b64}" '
         f'style="width:100%;height:100%;border:none;display:block;"></iframe></div>'
     )
@@ -1323,6 +1265,85 @@ def _suggestions_bar_html(current_query):
     )
 
 
+_FOLLOWUP_SPECIALTIES = [
+    ("Eye Care",          "ophthalmology"),
+    ("Heart / Cardiology","cardiology"),
+    ("Orthopedics",       "orthopedics"),
+    ("Emergency",         "emergency"),
+    ("Dialysis",          "dialysis"),
+    ("Cancer / Oncology", "oncology"),
+    ("Maternity",         "maternity"),
+    ("Neurology",         "neurology"),
+    ("Pediatrics",        "pediatrics"),
+    ("General Surgery",   "general surgery"),
+]
+
+
+def _followup_html(meta):
+    """
+    Contextual follow-up bar shown below search results.
+    - No care_need: ask what specialty the user needs, offer quick-reply chips.
+    - Has care_need + results: offer refinement chips (government/private/nearest).
+    """
+    loc       = meta.get("resolved_location", "") or ""
+    care_need = meta.get("care_need", "") or ""
+    n_results = meta.get("total_matches", 0)
+
+    if not loc:
+        return ""
+
+    def _chip(label, query_text, emoji=""):
+        js = _js_suggestion(query_text)
+        txt = f"{emoji} {label}".strip()
+        return (
+            f'<button onclick="{js}" '
+            f'style="background:#fff;color:{GRN_MID};border:1px solid {BORDER_G};'
+            f'border-radius:20px;padding:4px 14px;font-size:12px;cursor:pointer;'
+            f'font-family:inherit;white-space:nowrap;flex-shrink:0;font-weight:500;'
+            f'transition:background 0.15s;"'
+            f' onmouseover="this.style.background=\'{GRN_PALE}\'"'
+            f' onmouseout="this.style.background=\'#fff\'">'
+            f'{txt}</button>'
+        )
+
+    if not care_need:
+        # Broad query — no specialty detected; ask what they need
+        loc_title = loc.title()
+        chips = "".join(
+            _chip(label, f"{specialty} near {loc_title}")
+            for label, specialty in _FOLLOWUP_SPECIALTIES
+        )
+        return (
+            f'<div style="background:#F0F7FF;border:0.5px solid #B3D4F5;'
+            f'border-radius:10px;padding:12px 16px;margin-bottom:14px;">'
+            f'<div style="font-size:12px;font-weight:600;color:#0D47A1;margin-bottom:8px;">'
+            f'&#x1F4AC; What kind of care are you looking for in {loc_title}?</div>'
+            f'<div style="display:flex;gap:7px;flex-wrap:wrap;">{chips}</div>'
+            f'</div>'
+        )
+
+    elif n_results > 0:
+        # Has results — offer quick refinements
+        loc_title = loc.title()
+        care_title = care_need.title()
+        refine_chips = "".join([
+            _chip("Government only",   f"government {care_need} near {loc_title}", "🏛"),
+            _chip("Private only",      f"private {care_need} near {loc_title}",    "🏥"),
+            _chip("Nearest first",     f"{care_need} near {loc_title}",            "📍"),
+            _chip("Wider search",      f"{care_need} near {loc_title}",            "🔍"),
+        ])
+        return (
+            f'<div style="background:#F0F7FF;border:0.5px solid #B3D4F5;'
+            f'border-radius:10px;padding:10px 16px;margin-bottom:14px;">'
+            f'<div style="font-size:12px;font-weight:600;color:#0D47A1;margin-bottom:7px;">'
+            f'&#x1F4AC; Found {n_results} {care_title} facilities near {loc_title}. Refine your search:</div>'
+            f'<div style="display:flex;gap:7px;flex-wrap:wrap;">{refine_chips}</div>'
+            f'</div>'
+        )
+
+    return ""
+
+
 def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=None, compare=None):
     meta    = meta    or {}
     compare = compare or []
@@ -1362,8 +1383,16 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             f'padding:12px 16px;border-radius:0 6px 6px 0;font-size:13px;color:{TXT_PRI};">'
             f'&#9888; {meta["error"]}</div>'
         )
-    elif not filtered:
+    elif not results and not care_need and loc:
+        # Location resolved but no specialty — show conversational follow-up only
+        loc_title = loc.title()
         results_body = (
+            f'<div style="font-size:13px;color:{TXT_PRI};padding-bottom:12px;">'
+            f'Showing results near <b>{loc_title}</b>. What kind of care are you looking for?</div>'
+            + _followup_html(meta)
+        )
+    elif not filtered:
+        no_results_msg = (
             f'<div style="background:#FFF8E1;border-left:3px solid #F9A825;'
             f'padding:12px 16px;border-radius:0 6px 6px 0;font-size:13px;color:{TXT_PRI};">'
             f'No {filter_val.lower()} facilities found for '
@@ -1371,13 +1400,25 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             f'<br>Try switching to <b>All</b> filter, increasing the radius, or '
             f'checking the spelling.</div>'
         )
+        results_body = no_results_msg + _followup_html(meta)
     else:
         n_loc   = meta.get("located_count", len(results))
         n_unloc = meta.get("unlocated_count", 0)
         unloc_s = f" + {n_unloc} unverified" if n_unloc else ""
         fuzzy   = (f' <span style="color:{TXT_MUT};font-size:11px;">(matched: {loc})</span>'
                    if meta.get("location_match_type") == "fuzzy" else "")
+        expanded_from = meta.get("expanded_from")
+        expand_banner = ""
+        if expanded_from:
+            expand_banner = (
+                f'<div style="background:#E3F2FD;border-left:3px solid #1976D2;'
+                f'padding:8px 14px;border-radius:0 6px 6px 0;font-size:12px;'
+                f'color:#0D47A1;margin-bottom:10px;">'
+                f'&#8505; No results within {int(expanded_from)} km — '
+                f'automatically expanded to <b>{int(radius or 50)} km</b>.</div>'
+            )
         summary = (
+            expand_banner +
             f'<div style="font-size:12px;color:{TXT_SEC};margin-bottom:12px;">'
             f'<b style="color:{TXT_PRI};">{n_loc}</b> facilities for '
             f'<b style="color:{TXT_PRI};">{care_need}</b> within '
@@ -1391,7 +1432,8 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             for i, r in enumerate(filtered)
         )
         compare_panel = _compare_panel_html(compare) if len(compare) >= 2 else ""
-        results_body = compare_panel + summary + cards
+        followup      = _followup_html(meta)
+        results_body  = compare_panel + summary + followup + cards
 
     # Map
     if meta.get("search_lat"):
@@ -1405,7 +1447,6 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
     shortlist_panel = _shortlist_panel_html(shortlist)
     topbar       = _topbar_html(query, radius or 50, n_saved)
     suggestions  = _suggestions_bar_html(query)
-    langbar      = _langbar_html(meta.get("lang", "English"))
     filterbar    = _filterbar_html(filter_val, sort_val, len(results))
 
     responsive_css = f"""
@@ -1453,7 +1494,6 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
     min-height:85vh;">
   {topbar}
   {suggestions}
-  {langbar}
   {filterbar}
   <div class="sv-body">
     <div class="sv-results">{results_body}</div>
@@ -1535,7 +1575,6 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         h_rad    = gr.Textbox(value="50",            elem_id="h-rad",    label="", elem_classes=_SHIDE)
         h_filter = gr.Textbox(value="All",           elem_id="h-filter", label="", elem_classes=_SHIDE)
         h_sort   = gr.Textbox(value=_DEFAULT_SORT,   elem_id="h-sort",   label="", elem_classes=_SHIDE)
-        h_lang   = gr.Textbox(value="English",       elem_id="h-lang",   label="", elem_classes=_SHIDE)
         h_bm_id  = gr.Textbox(value="",             elem_id="h-bm-id",  label="", elem_classes=_SHIDE)
         h_rm_idx = gr.Textbox(value="",             elem_id="h-rm-idx", label="", elem_classes=_SHIDE)
         # One trigger button per action — JS calls element.click() on these
@@ -1557,7 +1596,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     export_file = gr.File(label="Download shortlist", visible=False)
 
     # ── Search ────────────────────────────────────────────────────────────
-    def _do_search(query, radius, shortlist, filter_val, sort_val, lang):
+    def _do_search(query, radius, shortlist, filter_val, sort_val):
         try:
             radius = int(float(radius or "50"))
         except (ValueError, TypeError):
@@ -1572,20 +1611,47 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             return (_render_page([], shortlist, filter_val, sort_val, query, radius, m, []),
                     [], m, query, radius, [])
 
-        lang = lang or "English"
-        care_need, location, org_type_hint = parse_combined_query(query, centroids, lang=lang)
+        care_need, location, org_type_hint = parse_combined_query(query, centroids)
         if not location:
             m = {"error": f"Couldn't find a location in '{query}'. Try 'dialysis near Jaipur'."}
             return (_render_page([], shortlist, filter_val, sort_val, query, radius, m, []),
                     [], m, query, radius, [])
+
         if not care_need:
-            care_need = query
+            # No specialty detected (e.g. "best hospitals near Pune") —
+            # resolve the location, show the map and follow-up prompt.
+            rlat, rlon, rname, rtype = resolve_location(location, centroids)
+            m = {
+                "resolved_location":   rname or location,
+                "location_match_type": rtype or "exact",
+                "care_need":           "",
+                "total_matches":       0,
+                "search_lat":          rlat,
+                "search_lon":          rlon,
+            }
+            html = _render_page([], shortlist, filter_val, sort_val, query, radius, m, [])
+            return html, [], m, query, radius, []
 
         results, meta = supervisor.run(
             df=df, centroids=centroids,
             care_need_query=care_need, location_query=location,
             radius_km=radius,
         )
+
+        # Auto-expand radius when no results found at the requested distance
+        if not results:
+            for bigger_r in [100, 200, 400]:
+                if bigger_r <= radius:
+                    continue
+                results, meta = supervisor.run(
+                    df=df, centroids=centroids,
+                    care_need_query=care_need, location_query=location,
+                    radius_km=bigger_r,
+                )
+                if results:
+                    meta["expanded_from"] = radius
+                    radius = bigger_r
+                    break
 
         # Use org_type extracted by the LLM; only overrides if the user
         # hasn't explicitly clicked a filter chip.
@@ -1596,13 +1662,12 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             elif org_type_hint == "private":
                 effective_filter = "Private"
 
-        meta["lang"] = lang
         html = _render_page(results, shortlist, effective_filter, sort_val, query, radius, meta, [])
         return html, results, meta, query, radius, []
 
     h_search_btn.click(
         _do_search,
-        [h_query, h_rad, shortlist_state, filter_state, sort_state, h_lang],
+        [h_query, h_rad, shortlist_state, filter_state, sort_state],
         [page_html, results_state, meta_state, query_state, radius_state, compare_state],
         api_name=_AN,
     )

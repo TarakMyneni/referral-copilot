@@ -18,8 +18,7 @@ _LLM_MODEL = "databricks-claude-3-7-sonnet"
 
 _LLM_PROMPT = """\
 You are a medical query parser for an Indian healthcare referral app.
-
-The user's preferred language is {lang}. If the query is not in English, translate it to English first, then extract the fields.
+If the query is not in English, translate it to English first, then extract the fields.
 
 Extract three things from the user query:
 - care_need : the medical condition, symptom, or procedure in English (e.g. "eye care", "broken leg", "dialysis")
@@ -49,10 +48,9 @@ Query: {query}
 """
 
 
-def _llm_parse(text, lang="English"):
+def _llm_parse(text):
     """
     Use Databricks Foundation Model to extract care_need, location, org_type.
-    Includes the user's selected language so the LLM knows to translate.
     Returns (care_need, location, org_type).
     """
     import json, os, requests
@@ -68,7 +66,7 @@ def _llm_parse(text, lang="English"):
                      "Content-Type": "application/json"},
             json={
                 "messages": [{"role": "user",
-                              "content": _LLM_PROMPT.format(query=text, lang=lang)}],
+                              "content": _LLM_PROMPT.format(query=text)}],
                 "max_tokens": 80,
                 "temperature": 0,
             },
@@ -81,7 +79,7 @@ def _llm_parse(text, lang="English"):
             care     = parsed.get("care_need", "").strip()
             location = parsed.get("location",  "").strip()
             org      = parsed.get("org_type",  "").strip().lower()
-            print(f"[LLM] lang={lang} '{text}' → care='{care}' loc='{location}' org='{org}'")
+            print(f"[LLM] '{text}' → care='{care}' loc='{location}' org='{org}'")
             return care, location, org
     except Exception as exc:
         print(f"[LLM] Parse failed: {exc}")
@@ -123,19 +121,19 @@ def _regex_fallback(text, centroids):
     return text, "", ""
 
 
-def parse_combined_query(text, centroids, lang="English"):
+def parse_combined_query(text, centroids):
     """
     Parse a free-text query into (care_need, location, org_type).
 
     LLM is the primary parser — it handles any natural language, symptoms,
-    government/private intent, and regional Indian languages.
+    and government/private intent.
     _regex_fallback is used only when the LLM endpoint is unreachable.
     """
     text = (text or "").strip()
     if not text:
         return "", "", ""
 
-    care_need, location, org_type = _llm_parse(text, lang=lang)
+    care_need, location, org_type = _llm_parse(text)
     if care_need or location:
         return care_need, location, org_type
 
