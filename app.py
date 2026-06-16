@@ -227,43 +227,55 @@ _JS = """
   if (window.__sv_bridge_loaded) return;
   window.__sv_bridge_loaded = true;
 
+  /* Set a textbox value and dispatch input event so Svelte picks it up */
   function _set(sel, val) {
     var el = document.querySelector(sel);
     if (!el) return;
     el.value = val;
-    el.dispatchEvent(new Event('input',   {bubbles: true}));
-    el.dispatchEvent(new Event('change',  {bubbles: true}));
+    el.dispatchEvent(new Event('input', {bubbles:true}));
   }
-  function _click(sel) {
+
+  /* Dispatch an Enter keydown on a textbox — triggers gr.Textbox .submit() handler */
+  function _enter(sel) {
     var el = document.querySelector(sel);
-    if (el) el.click();
+    if (!el) return;
+    el.dispatchEvent(new KeyboardEvent('keydown', {
+      key:'Enter', code:'Enter', keyCode:13, which:13,
+      bubbles:true, cancelable:true
+    }));
   }
 
   window.sSearch = function() {
     var q = (document.getElementById('vi-query')  || {}).value || '';
     var r = (document.getElementById('vi-radius') || {}).value || '50';
-    _set('#h-query textarea, #h-query input', q);
     _set('#h-rad textarea, #h-rad input', r);
-    setTimeout(function(){ _click('#h-search button'); }, 200);
+    _set('#h-query textarea, #h-query input', q);
+    setTimeout(function(){ _enter('#h-query textarea, #h-query input'); }, 80);
   };
   window.sFilter = function(v) {
     _set('#h-filter textarea, #h-filter input', v);
-    setTimeout(function(){ _click('#h-filter-btn button'); }, 200);
+    setTimeout(function(){ _enter('#h-filter textarea, #h-filter input'); }, 80);
   };
   window.sSort = function(v) {
     _set('#h-sort textarea, #h-sort input', v);
-    setTimeout(function(){ _click('#h-sort-btn button'); }, 200);
+    setTimeout(function(){ _enter('#h-sort textarea, #h-sort input'); }, 80);
   };
   window.sBm = function(id) {
     _set('#h-bm-id textarea, #h-bm-id input', id);
-    setTimeout(function(){ _click('#h-bm-btn button'); }, 200);
+    setTimeout(function(){ _enter('#h-bm-id textarea, #h-bm-id input'); }, 80);
   };
   window.sRm = function(idx) {
     _set('#h-rm-idx textarea, #h-rm-idx input', String(idx));
-    setTimeout(function(){ _click('#h-rm-btn button'); }, 200);
+    setTimeout(function(){ _enter('#h-rm-idx textarea, #h-rm-idx input'); }, 80);
   };
-  window.sClear  = function(){ setTimeout(function(){ _click('#h-clear button');  }, 200); };
-  window.sExport = function(){ setTimeout(function(){ _click('#h-export button'); }, 200); };
+  window.sClear = function() {
+    _set('#h-clear-tx textarea, #h-clear-tx input', String(Date.now()));
+    setTimeout(function(){ _enter('#h-clear-tx textarea, #h-clear-tx input'); }, 80);
+  };
+  window.sExport = function() {
+    _set('#h-export-tx textarea, #h-export-tx input', String(Date.now()));
+    setTimeout(function(){ _enter('#h-export-tx textarea, #h-export-tx input'); }, 80);
+  };
 
   document.addEventListener('keydown', function(e){
     if (e.key === 'Enter' && (e.target.id === 'vi-query' || e.target.id === 'vi-radius'))
@@ -560,11 +572,33 @@ def _map_html(results, lat, lon, radius_km, location_name):
     )
 
 
-def _empty_map_html():
+_INDIA_MAP_B64 = ""
+
+def _build_india_map():
+    global _INDIA_MAP_B64
+    try:
+        m = folium.Map(location=[22.5, 78.9], zoom_start=5, tiles="CartoDB Positron")
+        _INDIA_MAP_B64 = base64.b64encode(
+            m.get_root().render().encode("utf-8")
+        ).decode("ascii")
+        print("[App] Default India map ready")
+    except Exception as e:
+        print(f"[App] Default map failed: {e}")
+
+threading.Thread(target=_build_india_map, daemon=True).start()
+
+
+def _default_map_html():
+    if _INDIA_MAP_B64:
+        return (
+            f'<div style="position:relative;width:100%;height:100%;min-height:260px;">'
+            f'<iframe src="data:text/html;base64,{_INDIA_MAP_B64}" '
+            f'style="width:100%;height:100%;border:none;display:block;"></iframe></div>'
+        )
     return (
-        f'<div style="width:100%;height:100%;min-height:260px;background:#F2F4F0;'
+        f'<div style="width:100%;height:100%;min-height:260px;background:#EBF0E8;'
         f'display:flex;align-items:center;justify-content:center;'
-        f'font-size:12px;color:{TXT_MUT};">Map will appear after search</div>'
+        f'font-size:12px;color:{TXT_MUT};">Map loading…</div>'
     )
 
 
@@ -628,44 +662,6 @@ def _shortlist_panel_html(shortlist):
   {items if items else empty_msg}
   {export_btn}
 </div>"""
-
-
-_EXAMPLES = [
-    "dialysis near Jaipur",
-    "eye care near Hyderabad",
-    "emergency surgery near Patna",
-    "cardiac care near Mumbai",
-    "maternity hospital near Delhi",
-    "cancer treatment near Bangalore",
-]
-
-def _examples_bar_html(current_query):
-    pills = ""
-    for ex in _EXAMPLES:
-        active = ex.lower() == (current_query or "").strip().lower()
-        bg  = GRN_MID  if active else "#FFFFFF"
-        clr = GRN_PALE if active else GRN_MID
-        bdr = GRN_MID  if active else BORDER_G
-        safe_ex = ex.replace("'", "\\'")
-        js  = (
-            f"document.getElementById('vi-query').value='{safe_ex}';"
-            f"window.sSearch();"
-        )
-        pills += (
-            f'<button onclick="{js}" '
-            f'style="background:{bg};color:{clr};border:0.5px solid {bdr};'
-            f'border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer;'
-            f'font-family:inherit;white-space:nowrap;flex-shrink:0;">'
-            f'{ex}</button>'
-        )
-    return (
-        f'<div style="background:#FAFCF7;border-bottom:1px solid {BORDER};'
-        f'padding:7px 20px;display:flex;align-items:center;gap:8px;'
-        f'flex-wrap:nowrap;overflow-x:auto;flex-shrink:0;">'
-        f'<span style="font-size:11px;color:{TXT_MUT};white-space:nowrap;'
-        f'flex-shrink:0;">Try:</span>'
-        f'{pills}</div>'
-    )
 
 
 def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=None):
@@ -734,12 +730,11 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             int(radius or 50), meta.get("resolved_location", query or ""),
         )
     else:
-        right_map = _empty_map_html()
+        right_map = _default_map_html()
 
     shortlist_panel = _shortlist_panel_html(shortlist)
-    topbar      = _topbar_html(query, radius or 50, n_saved)
-    examplesbar = _examples_bar_html(query)
-    filterbar   = _filterbar_html(filter_val, sort_val, len(results))
+    topbar    = _topbar_html(query, radius or 50, n_saved)
+    filterbar = _filterbar_html(filter_val, sort_val, len(results))
 
     responsive_css = f"""
 <style>
@@ -785,7 +780,6 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     min-height:85vh;">
   {topbar}
-  {examplesbar}
   {filterbar}
   <div class="sv-body">
     <div class="sv-results">{results_body}</div>
@@ -826,19 +820,12 @@ body, .gradio-container { background: #F7FAF3 !important; }
 footer { display: none !important; }
 .gr-prose { padding: 0 !important; }
 
-/* Bridge components: keep in DOM (so JS can find them) but off-screen / invisible */
-#h-query, #h-rad, #h-search, #h-filter, #h-filter-btn,
-#h-sort, #h-sort-btn, #h-bm-id, #h-bm-btn,
-#h-rm-idx, #h-rm-btn, #h-clear, #h-export {
-    position: fixed !important;
-    bottom: -300px !important;
-    left: 0 !important;
-    width: 1px !important;
-    height: 1px !important;
-    overflow: hidden !important;
-    opacity: 0 !important;
-    pointer-events: none !important;
-    z-index: -9999 !important;
+/* Hide the entire bridge column visually while keeping it in the DOM.
+   display:none (CSS) does NOT remove elements from DOM — querySelector still
+   finds them, Svelte event listeners still fire. This is the key difference
+   from visible=False which uses Svelte {#if} and removes from DOM entirely. */
+#sv-bridge {
+    display: none !important;
 }
 """
 
@@ -860,21 +847,22 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     # Main visible output
     page_html = gr.HTML(_render_page([], [], "All", "Nearest first", "", 50))
 
-    # Bridge components: NOT visible=False — that removes them from DOM in Svelte-based Gradio.
-    # Instead, CSS (above) positions them off-screen so JS can still find and trigger them.
-    h_query      = gr.Textbox(value="",              elem_id="h-query")
-    h_rad        = gr.Textbox(value="50",            elem_id="h-rad")
-    h_search     = gr.Button("s",                    elem_id="h-search")
-    h_filter     = gr.Textbox(value="All",           elem_id="h-filter")
-    h_filter_btn = gr.Button("f",                    elem_id="h-filter-btn")
-    h_sort       = gr.Textbox(value="Nearest first", elem_id="h-sort")
-    h_sort_btn   = gr.Button("so",                   elem_id="h-sort-btn")
-    h_bm_id      = gr.Textbox(value="",              elem_id="h-bm-id")
-    h_bm_btn     = gr.Button("bm",                   elem_id="h-bm-btn")
-    h_rm_idx     = gr.Textbox(value="",              elem_id="h-rm-idx")
-    h_rm_btn     = gr.Button("rm",                   elem_id="h-rm-btn")
-    h_clear      = gr.Button("cl",                   elem_id="h-clear")
-    h_export     = gr.Button("ex",                   elem_id="h-export")
+    # ── Bridge components ─────────────────────────────────────────────────
+    # Wrapped in a Column with elem_id="sv-bridge".
+    # CSS sets #sv-bridge { display:none } which hides visually but KEEPS in DOM
+    # (unlike visible=False which uses Svelte {#if} and removes from DOM entirely,
+    #  breaking JS querySelector).
+    # JS dispatches KeyboardEvent('keydown', {key:'Enter'}) on the textareas to
+    # trigger Gradio's .submit() handlers — more reliable than clicking hidden buttons.
+    with gr.Column(elem_id="sv-bridge"):
+        h_query    = gr.Textbox(value="",              elem_id="h-query")
+        h_rad      = gr.Textbox(value="50",            elem_id="h-rad")
+        h_filter   = gr.Textbox(value="All",           elem_id="h-filter")
+        h_sort     = gr.Textbox(value="Nearest first", elem_id="h-sort")
+        h_bm_id    = gr.Textbox(value="",              elem_id="h-bm-id")
+        h_rm_idx   = gr.Textbox(value="",              elem_id="h-rm-idx")
+        h_clear_tx = gr.Textbox(value="",              elem_id="h-clear-tx")
+        h_export_tx= gr.Textbox(value="",              elem_id="h-export-tx")
 
     export_file = gr.File(label="Download shortlist", visible=False)
 
@@ -884,7 +872,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             radius = int(float(radius or "50"))
         except (ValueError, TypeError):
             radius = 50
-        query  = (query or "").strip()
+        query = (query or "").strip()
         if not _data_ready:
             m = {"error": _STARTUP_ERROR or "Data still loading — please try again."}
             return (_render_page([], shortlist, filter_val, sort_val, query, radius, m),
@@ -910,7 +898,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         html = _render_page(results, shortlist, filter_val, sort_val, query, radius, meta)
         return html, results, meta, query, radius
 
-    h_search.click(
+    h_query.submit(
         _do_search,
         [h_query, h_rad, shortlist_state, filter_state, sort_state],
         [page_html, results_state, meta_state, query_state, radius_state],
@@ -921,7 +909,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     def _do_filter(fv, results, shortlist, sort_val, query, radius, meta):
         return _render_page(results, shortlist, fv, sort_val, query, radius, meta), fv
 
-    h_filter_btn.click(
+    h_filter.submit(
         _do_filter,
         [h_filter, results_state, shortlist_state, sort_state,
          query_state, radius_state, meta_state],
@@ -932,7 +920,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     def _do_sort(sv, results, shortlist, filter_val, query, radius, meta):
         return _render_page(results, shortlist, filter_val, sv, query, radius, meta), sv
 
-    h_sort_btn.click(
+    h_sort.submit(
         _do_sort,
         [h_sort, results_state, shortlist_state, filter_state,
          query_state, radius_state, meta_state],
@@ -967,7 +955,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 pass
         return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
 
-    h_bm_btn.click(
+    h_bm_id.submit(
         _do_bookmark,
         [h_bm_id, results_state, shortlist_state, filter_state, sort_state,
          query_state, radius_state, meta_state],
@@ -982,7 +970,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             pass
         return _render_page(results, shortlist, filter_val, sort_val, query, radius, meta), shortlist
 
-    h_rm_btn.click(
+    h_rm_idx.submit(
         _do_remove,
         [h_rm_idx, results_state, shortlist_state, filter_state, sort_state,
          query_state, radius_state, meta_state],
@@ -990,24 +978,24 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     )
 
     # ── Clear shortlist ───────────────────────────────────────────────────
-    def _do_clear(results, shortlist, filter_val, sort_val, query, radius, meta):
+    def _do_clear(_, results, shortlist, filter_val, sort_val, query, radius, meta):
         return _render_page(results, [], filter_val, sort_val, query, radius, meta), []
 
-    h_clear.click(
+    h_clear_tx.submit(
         _do_clear,
-        [results_state, shortlist_state, filter_state, sort_state,
+        [h_clear_tx, results_state, shortlist_state, filter_state, sort_state,
          query_state, radius_state, meta_state],
         [page_html, shortlist_state], api_name=_AN,
     )
 
     # ── Export ────────────────────────────────────────────────────────────
-    def _do_export(shortlist):
+    def _do_export(_, shortlist):
         if not shortlist:
             return gr.update(visible=False)
         path = _export_csv(shortlist)
         return gr.update(value=path, visible=True)
 
-    h_export.click(_do_export, [shortlist_state], [export_file], api_name=_AN)
+    h_export_tx.submit(_do_export, [h_export_tx, shortlist_state], [export_file], api_name=_AN)
 
 
 if __name__ == "__main__":
