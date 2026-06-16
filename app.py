@@ -680,7 +680,7 @@ footer {{ display: none !important; }}
 # UI
 # ---------------------------------------------------------------------------
 
-with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS) as demo:
+with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS, show_api=False) as demo:
 
     results_state   = gr.State([])
     shortlist_state = gr.State([])
@@ -704,11 +704,11 @@ with gr.Blocks(title="Suvidha — Healthcare Referrals", css=CSS) as demo:
         with gr.Group(elem_classes=["search-pill"]):
             with gr.Column(elem_classes=["pill-section"], min_width=0):
                 where_box = gr.Textbox(label="WHERE", placeholder="City or district",
-                                       elem_id="where-box", lines=1, show_label=True,
+                                       elem_id="where-box", lines=1,
                                        container=False)
             with gr.Column(elem_classes=["pill-section"], min_width=0):
                 need_box  = gr.Textbox(label="CARE NEED", placeholder="e.g. dialysis",
-                                       elem_id="need-box", lines=1, show_label=True,
+                                       elem_id="need-box", lines=1,
                                        container=False)
             with gr.Column(elem_classes=["pill-section"], min_width=0, scale=0):
                 radius_slider = gr.Slider(minimum=10, maximum=500, value=150, step=10,
