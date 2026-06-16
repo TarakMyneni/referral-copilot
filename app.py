@@ -221,6 +221,67 @@ _BUILDING_ICON = (
     '</svg>'
 )
 
+# ---------------------------------------------------------------------------
+# Inline JS helpers
+# Svelte's {@html} does NOT execute <script> tags, so all bridge calls must
+# be inline onclick attributes — those fire unconditionally via the browser's
+# event system, no global function definitions required.
+# ---------------------------------------------------------------------------
+
+# Bridge element selectors
+_QA = "#h-query textarea,#h-query input"
+_RA = "#h-rad textarea,#h-rad input"
+_FA = "#h-filter textarea,#h-filter input"
+_SA = "#h-sort textarea,#h-sort input"
+_BA = "#h-bm-id textarea,#h-bm-id input"
+_RMA = "#h-rm-idx textarea,#h-rm-idx input"
+_CLA = "#h-clear-tx textarea,#h-clear-tx input"
+_EXA = "#h-export-tx textarea,#h-export-tx input"
+
+def _jtap(sel, jsval):
+    """Inline JS: set bridge textbox value (jsval = JS expression) and dispatch Enter."""
+    return (
+        f"(function(){{var e=document.querySelector('{sel}');"
+        f"if(!e)return;"
+        f"e.value={jsval};"
+        f"e.dispatchEvent(new Event('input',{{bubbles:true}}));"
+        f"setTimeout(function(){{e.dispatchEvent(new KeyboardEvent('keydown',"
+        f"{{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}}));}},80);"
+        f"}})();"
+    )
+
+# Inline search action — reads from the visible vi-query / vi-radius inputs
+_JS_SEARCH_INLINE = (
+    "(function(){"
+    "var inp=document.getElementById('vi-query');"
+    "var rinp=document.getElementById('vi-radius');"
+    "var q=inp?inp.value:'';"
+    "var r=rinp?rinp.value:'50';"
+    "var ra=document.querySelector('#h-rad textarea,#h-rad input');"
+    "var qa=document.querySelector('#h-query textarea,#h-query input');"
+    "if(ra){ra.value=r;ra.dispatchEvent(new Event('input',{bubbles:true}));}"
+    "if(qa){qa.value=q;qa.dispatchEvent(new Event('input',{bubbles:true}));"
+    "setTimeout(function(){qa.dispatchEvent(new KeyboardEvent('keydown',"
+    "{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}));},80);}"
+    "})()"
+)
+
+def _js_suggestion(q):
+    """Inline JS for a suggestion pill: pre-fills vi-query and triggers search."""
+    sq = q.replace("'", "\\'")
+    return (
+        f"(function(){{"
+        f"var inp=document.getElementById('vi-query');if(inp)inp.value='{sq}';"
+        f"var ra=document.querySelector('#h-rad textarea,#h-rad input');"
+        f"var qa=document.querySelector('#h-query textarea,#h-query input');"
+        f"if(ra){{ra.value='50';ra.dispatchEvent(new Event('input',{{bubbles:true}}));}}"
+        f"if(qa){{qa.value='{sq}';"
+        f"qa.dispatchEvent(new Event('input',{{bubbles:true}}));"
+        f"setTimeout(function(){{qa.dispatchEvent(new KeyboardEvent('keydown',"
+        f"{{key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true}}));}},80);}}"
+        f"}})();"
+    )
+
 _JS = """
 <script>
 (function(){
@@ -317,6 +378,7 @@ def _topbar_html(query, radius, n_saved):
       <div style="font-size:9px;font-weight:600;color:{TXT_MUT};text-transform:uppercase;
                   letter-spacing:0.5px;line-height:1;">SEARCH</div>
       <input id="vi-query" value="{query}" placeholder="e.g. dialysis near Jaipur"
+        onkeydown="if(event.key==='Enter'){{{_JS_SEARCH_INLINE}}}"
         style="border:none;outline:none;background:transparent;font-size:13px;
                color:{TXT_PRI};width:100%;padding:0;margin-top:2px;font-family:inherit;">
     </div>
@@ -327,12 +389,13 @@ def _topbar_html(query, radius, n_saved):
                   letter-spacing:0.5px;line-height:1;">RADIUS</div>
       <div style="display:flex;align-items:center;gap:3px;margin-top:2px;">
         <input id="vi-radius" type="number" min="10" max="500" step="10" value="{int(radius or 50)}"
+          onkeydown="if(event.key==='Enter'){{{_JS_SEARCH_INLINE}}}"
           style="border:none;outline:none;background:transparent;font-size:13px;
                  color:{TXT_PRI};width:38px;padding:0;font-family:inherit;">
         <span style="font-size:13px;color:{TXT_PRI};">km</span>
       </div>
     </div>
-    <button onclick="sSearch()"
+    <button onclick="{_JS_SEARCH_INLINE}"
       style="width:38px;height:38px;margin:5px;border-radius:50%;background:{GRN_MID};
              border:none;cursor:pointer;display:flex;align-items:center;
              justify-content:center;flex-shrink:0;padding:0;">
@@ -357,13 +420,15 @@ def _filterbar_html(filter_val, sort_val, n_results):
             st = f"background:{GRN_MID};color:{GRN_PALE};border:1px solid {GRN_MID};"
         else:
             st = f"background:#fff;color:{GRN_MID};border:1px solid {BORDER_G};"
-        return (f'<button onclick="sFilter(\'{val}\')" style="{st}'
+        js = _jtap(_FA, f"'{val}'")
+        return (f'<button onclick="{js}" style="{st}'
                 f'border-radius:20px;padding:5px 14px;font-size:12px;cursor:pointer;'
                 f'font-family:inherit;">{txt}</button>')
 
     new_sort = "Best match" if sort_val == "Nearest first" else "Nearest first"
+    sort_js = _jtap(_SA, f"'{new_sort}'")
     sort_btn = (
-        f'<button onclick="sSort(\'{new_sort}\')" '
+        f'<button onclick="{sort_js}" '
         f'style="background:#fff;border:0.5px solid {BORDER};border-radius:20px;'
         f'padding:5px 14px;font-size:12px;color:{TXT_SEC};cursor:pointer;'
         f'display:flex;align-items:center;gap:5px;font-family:inherit;">'
@@ -459,6 +524,8 @@ def _card_html(rank, r, shortlist):
     # Escape fid for inline JS (no quotes/backslashes expected in IDs)
     safe_fid = fid.replace("'", "\\'")
 
+    bm_onclick = _jtap(_BA, "'" + safe_fid + "'")
+
     sem_pill = ""
     if r.get("sem_score", 0) > 0:
         sem_pill = (
@@ -521,7 +588,7 @@ def _card_html(rank, r, shortlist):
     <div style="border-top:0.5px solid {BORDER};margin-top:10px;padding-top:8px;
                 display:flex;align-items:center;justify-content:space-between;gap:8px;">
       <div style="display:flex;gap:14px;flex-wrap:wrap;min-width:0;">{footer_links}</div>
-      <button onclick="sBm('{safe_fid}')"
+      <button onclick="{bm_onclick}"
         style="width:30px;height:30px;border-radius:50%;border:0.5px solid {bm_bdr};
                background:{bm_bg};cursor:pointer;display:flex;align-items:center;
                justify-content:center;flex-shrink:0;padding:0;">
@@ -626,13 +693,13 @@ def _shortlist_panel_html(shortlist):
                    padding:1px 5px;color:{tclr};">{tlbl}</span>
     </div>
   </div>
-  <button onclick="sRm({i})"
+  <button onclick="{_jtap(_RMA, str(i))}"
     style="background:none;border:none;cursor:pointer;font-size:16px;
            color:{TXT_MUT};flex-shrink:0;padding:0;line-height:1;">×</button>
 </div>"""
 
     export_btn = (
-        f'<button onclick="sExport()" style="width:100%;background:{GRN_MID};color:{GRN_PALE};'
+        f'<button onclick="{_jtap(_EXA, "String(Date.now())")}" style="width:100%;background:{GRN_MID};color:{GRN_PALE};'
         f'border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:500;'
         f'cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;'
         f'margin-top:8px;font-family:inherit;">'
@@ -656,12 +723,42 @@ def _shortlist_panel_html(shortlist):
         <line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/>
         <line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
       </svg>Shortlist{badge}</span>
-    <span onclick="sClear()"
+    <span onclick="{_jtap(_CLA, "String(Date.now())")}"
       style="font-size:11px;color:{TXT_MUT};text-decoration:underline;cursor:pointer;">Clear</span>
   </div>
   {items if items else empty_msg}
   {export_btn}
 </div>"""
+
+
+_SUGGESTIONS = [
+    "dialysis near Jaipur",
+    "eye care near Hyderabad",
+    "emergency surgery near Patna",
+    "cardiac care near Mumbai",
+    "maternity hospital near Delhi",
+    "cancer treatment near Bangalore",
+]
+
+def _suggestions_bar_html(current_query):
+    pills = ""
+    for s in _SUGGESTIONS:
+        active = s.lower() == (current_query or "").strip().lower()
+        bg  = GRN_MID  if active else "#FFFFFF"
+        clr = GRN_PALE if active else GRN_MID
+        bdr = GRN_MID  if active else BORDER_G
+        pills += (
+            f'<button onclick="{_js_suggestion(s)}" '
+            f'style="background:{bg};color:{clr};border:0.5px solid {bdr};'
+            f'border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer;'
+            f'font-family:inherit;white-space:nowrap;flex-shrink:0;">{s}</button>'
+        )
+    return (
+        f'<div style="background:#FAFCF7;border-bottom:1px solid {BORDER};'
+        f'padding:7px 20px;display:flex;align-items:center;gap:8px;'
+        f'flex-wrap:nowrap;overflow-x:auto;flex-shrink:0;">'
+        f'{pills}</div>'
+    )
 
 
 def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=None):
@@ -690,15 +787,14 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             )
         else:
             results_body = (
-                f'<div style="color:{TXT_MUT};font-size:13px;font-style:italic;padding:20px 0;">'
-                f'Try: <b>dialysis near Jaipur</b> or <b>eye care near Hyderabad</b></div>'
+                f'<div style="color:{TXT_MUT};font-size:13px;padding:20px 0;">'
+                f'Select a suggestion above or type a query to find facilities.</div>'
             )
     elif "error" in meta:
         results_body = (
             f'<div style="background:#FFF8E1;border-left:3px solid #F9A825;'
             f'padding:12px 16px;border-radius:0 6px 6px 0;font-size:13px;color:{TXT_PRI};">'
-            f'🤖 {meta["error"]}<br><span style="color:{TXT_MUT};font-size:12px;">'
-            f'Try: <b>dialysis near Jaipur</b></span></div>'
+            f'⚠ {meta["error"]}</div>'
         )
     elif not filtered:
         results_body = (
@@ -733,8 +829,9 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
         right_map = _default_map_html()
 
     shortlist_panel = _shortlist_panel_html(shortlist)
-    topbar    = _topbar_html(query, radius or 50, n_saved)
-    filterbar = _filterbar_html(filter_val, sort_val, len(results))
+    topbar       = _topbar_html(query, radius or 50, n_saved)
+    suggestions  = _suggestions_bar_html(query)
+    filterbar    = _filterbar_html(filter_val, sort_val, len(results))
 
     responsive_css = f"""
 <style>
@@ -780,6 +877,7 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     min-height:85vh;">
   {topbar}
+  {suggestions}
   {filterbar}
   <div class="sv-body">
     <div class="sv-results">{results_body}</div>
