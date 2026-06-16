@@ -125,7 +125,11 @@ CARE_NEED_SYNONYMS = {
     ],
     "ent": [
         "otolaryngology", "ent", "ear nose throat",
-        "hearing", "sinusitis", "tonsil",
+        "hearing", "sinusitis", "tonsil", "tonsillitis",
+        "ear infection", "ear pain", "earache", "otitis", "ear discharge",
+        "sore throat", "throat pain", "throat infection",
+        "nose bleed", "nosebleed", "nasal", "rhinitis",
+        "adenoid", "laryngology", "voice",
     ],
     "dermatology": [
         "dermatology", "skin", "dermatitis", "eczema", "psoriasis",

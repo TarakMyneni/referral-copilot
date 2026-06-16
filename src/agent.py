@@ -31,8 +31,13 @@ from . import feedback as feedback_tool
 SEMANTIC_W   = 0.40   # normalised semantic similarity contribution
 FEEDBACK_W   = 0.50   # per-save boost (capped at FEEDBACK_CAP saves)
 FEEDBACK_CAP = 5      # caps influence of very-frequently-saved facilities
-SEM_FLOOR    = 0.25   # discard results with semantic score below this threshold
+SEM_FLOOR    = 0.10   # discard results with semantic score below this threshold
                       # (prevents very-low-relevance RAG hits from surfacing)
+
+# Only these geo_source values carry reliable coordinates.
+# CITY_AVG / STATE_AVG are statistical estimates and can be far off for small cities,
+# so we treat them the same as UNKNOWN and use city-name string matching instead.
+_RELIABLE_GEO = frozenset({"ORIGINAL", "POSTCODE"})
 
 # ---------------------------------------------------------------------------
 # Facility-type filtering
@@ -189,13 +194,16 @@ def run(df: pd.DataFrame, centroids: dict,
             "org_type":      str(row.get(COLUMNS.get("org_type", "organization_type"), "") or ""),
         }
 
-        if has_coords:
+        if has_coords and geo_src in _RELIABLE_GEO:
             dist = haversine_km(lat, lon, flat, flon)
             if dist > radius_km:
                 continue
             located.append({**base, "distance_km": round(dist, 1),
                              "lat": flat, "lon": flon})
-        elif geo_src == "UNKNOWN":
+        else:
+            # CITY_AVG / STATE_AVG coordinates are statistical estimates that can be
+            # wrong for small cities (e.g. all Shimla facilities averaged = wrong spot).
+            # UNKNOWN has no coords at all. In all cases, use city-name string match.
             fac_city  = str(row.get(city_col,  "") or "").lower()
             fac_state = str(row.get(state_col, "") or "").lower()
             if (fac_city  and (fac_city  in loc_lower or loc_lower in fac_city)) or \

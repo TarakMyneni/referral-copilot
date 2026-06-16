@@ -246,12 +246,28 @@ def resolve_location(query_location, centroids):
     nom = _nominatim_lookup(raw)
     if nom:
         lat, lon, nom_city = nom
-        # Priority A: OSM address city name matches a centroid key → most reliable
+
+        canonical = None
+
+        # Priority A: exact match on OSM city name
         if nom_city and nom_city in city_centroids:
             canonical = nom_city
-        # Priority B: nearest centroid (geometric fallback for naming mismatches)
-        else:
+
+        # Priority B: OSM name may be verbose ("hyderabad municipal corporation",
+        # "bruhat bengaluru mahanagara palike") — check if any centroid key is a
+        # substring of it, or vice versa (min length 4 to avoid tiny false matches)
+        if not canonical and nom_city:
+            sub_matches = [
+                k for k in city_centroids
+                if len(k) >= 4 and (k in nom_city or nom_city in k)
+            ]
+            if sub_matches:
+                canonical = min(sub_matches, key=len)   # prefer shortest (most specific)
+
+        # Priority C: nearest centroid geometry (last resort)
+        if not canonical:
             canonical = _nearest_centroid(lat, lon, city_centroids)
+
         matched_name = canonical if canonical else (nom_city or key)
         print(f"[Geo] '{raw}' → canonical='{matched_name}'")
         return lat, lon, matched_name, "fuzzy"

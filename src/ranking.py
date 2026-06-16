@@ -36,6 +36,7 @@ Symptom → specialty mapping (always use the specialty, not the raw symptom):
   seizure, brain, stroke, paralysis, numbness                                   → "neurology"
   child / kid / kids / baby sick, infant, newborn, children's hospital         → "pediatrics"
   stomach pain, acidity, jaundice, liver                                        → "gastroenterology"
+  ear infection, ear pain, earache, sore throat, tonsil, sinusitis, nose bleed → "ent"
   skin rash, eczema, skin infection                                             → "dermatology"
   breathing difficulty, asthma, lung                                            → "pulmonology"
   urine burning, kidney stone, urinary                                          → "urology"
@@ -231,6 +232,7 @@ def search_facilities(df, location_query, care_need_query, centroids,
 
     located   = []
     unlocated = []
+    _RELIABLE_GEO = frozenset({"ORIGINAL", "POSTCODE"})
 
     for _, row in df.iterrows():
         ms = match_score(row, keywords)
@@ -262,13 +264,12 @@ def search_facilities(df, location_query, care_need_query, centroids,
             "num_doctors": str(row.get(COLUMNS.get("num_doctors", "num_doctors"), "") or ""),
             "capacity":    str(row.get(COLUMNS.get("capacity",    "capacity"),    "") or ""),
         }
-
-        if has_coords:
+        if has_coords and geo_src in _RELIABLE_GEO:
             dist = haversine_km(lat, lon, flat, flon)
             if dist > max_distance_km:
                 continue
             located.append({**base, "distance_km": round(dist, 1), "lat": flat, "lon": flon})
-        elif geo_src == "UNKNOWN":
+        else:
             fac_city  = str(row.get(city_col,  "") or "").lower()
             fac_state = str(row.get(state_col, "") or "").lower()
             if (fac_city and (fac_city in loc_lower or loc_lower in fac_city)) or \
