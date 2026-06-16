@@ -657,12 +657,14 @@ def _chat_thread_html(history):
             f'{u_esc}</div></div>'
         )
         if ai_msg:
+            # Inline bold style so it renders regardless of Gradio CSS resets
+            ai_html = str(ai_msg).replace("<b>", '<b style="font-weight:700;color:inherit">')
             msgs.append(
                 f'<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:7px;">'
                 f'{bot_icon}'
                 f'<div style="background:#F0F7FF;border:0.5px solid #B3D4F5;color:{TXT_PRI};'
                 f'border-radius:4px 18px 18px 18px;padding:8px 14px;max-width:82%;'
-                f'font-size:13px;line-height:1.5;">{ai_msg}</div></div>'
+                f'font-size:13px;line-height:1.5;">{ai_html}</div></div>'
             )
 
     return (
@@ -1584,6 +1586,7 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
 
     responsive_css = f"""
 <style>
+b, strong {{ font-weight:700 !important; color:inherit !important; }}
 .sv-body {{ display:flex; flex:1; min-height:600px; overflow:hidden; }}
 .sv-results {{
   flex: 0 0 65%; padding:16px 20px 24px; overflow-y:auto;
@@ -1667,7 +1670,7 @@ body, .gradio-container { background: #F7FAF3 !important; }
 .gradio-container > .main { padding: 0 !important; max-width: 100% !important; }
 footer { display: none !important; }
 .gr-prose { padding: 0 !important; }
-b, strong { font-weight: 700 !important; }
+b, strong { font-weight: 700 !important; color: inherit !important; }
 
 /* Hide bridge column and all bridge components.
    display:none keeps elements in DOM so querySelector still finds them and
@@ -1739,25 +1742,42 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     # handlers (filter, sort, bookmark) carry it through without changes.
 
     def _run_search(care_need, location, org_type_hint, radius, filter_val):
-        """Inner helper: run supervisor + auto-expand. Returns (results, meta, effective_filter, radius)."""
-        results, meta = supervisor.run(
+        """Run ONE supervisor call at max radius; filter client-side to avoid repeated RAG calls."""
+        # Single RAG + vector search call (expensive) — always search wide
+        all_results, meta = supervisor.run(
             df=df, centroids=centroids,
             care_need_query=care_need, location_query=location,
-            radius_km=radius,
+            radius_km=200, top_n=100,
         )
-        if not results:
+
+        def _within(r, km):
+            d = r.get("distance_km")
+            return d is None or d <= km
+
+        # Filter to user's requested radius
+        results = [r for r in all_results if _within(r, radius)]
+
+        # Auto-expand client-side (no extra API calls)
+        if not results and all_results:
             for bigger_r in [10, 25, 50, 100, 200]:
                 if bigger_r <= radius:
                     continue
-                results, meta = supervisor.run(
-                    df=df, centroids=centroids,
-                    care_need_query=care_need, location_query=location,
-                    radius_km=bigger_r,
-                )
+                results = [r for r in all_results if _within(r, bigger_r)]
                 if results:
+                    meta = dict(meta)
                     meta["expanded_from"] = radius
                     radius = bigger_r
                     break
+
+        # Recount meta to reflect the filtered slice
+        if results or all_results:
+            meta = dict(meta)
+            meta["total_matches"]   = len(results)
+            meta["located_count"]   = sum(1 for r in results if r.get("distance_km") is not None)
+            meta["unlocated_count"] = sum(1 for r in results if r.get("distance_km") is None)
+
+        results = results[:10]
+
         effective_filter = filter_val
         if filter_val == "All" and org_type_hint:
             if org_type_hint in ("government", "govt", "public", "sarkari"):
@@ -1799,8 +1819,31 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         _GENERIC_CARE = {"hospital", "hospitals", "clinic", "clinics", "healthcare",
                          "medical", "doctor", "doctors", "care", "health", "centre", "center"}
 
-        # Ask the LLM
-        response, is_action = _llm_chat(query, chat_history)
+        # ── Fast local action detection (no LLM needed) ───────────────────
+        # Handles filter commands and pure care-need follow-ups so even when
+        # the LLM is slow or unavailable these feel conversational.
+        def _local_action(q):
+            ql = q.lower()
+            govt_words = r"\b(govt|government|sarkari|public|sarkar|sarkari)\b"
+            if re.search(govt_words, ql):
+                return {"action": "filter", "org_type": "government"}
+            if re.search(r"\bprivate\b", ql):
+                return {"action": "filter", "org_type": "private"}
+            if re.search(r"\b(show all|all hospitals|remove filter|any type|both)\b", ql):
+                return {"action": "filter", "org_type": "all"}
+            # Single-word / short care-need with no location words and a known previous location
+            prev_loc = (cur_meta or {}).get("resolved_location", "")
+            if prev_loc and not re.search(r"\b(near|in|around|at|close to)\b", ql):
+                cn, loc, org = parse_combined_query(q, centroids)
+                if cn and cn.lower() not in _GENERIC_CARE and not loc:
+                    return {"action": "search", "care_need": cn, "location": prev_loc, "org_type": org}
+            return None
+
+        local = _local_action(query)
+        if local:
+            response, is_action = local, True
+        else:
+            response, is_action = _llm_chat(query, chat_history)
 
         # LLM unavailable — fall back to direct parse and run search
         if response is None:
@@ -1819,23 +1862,24 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 loc = meta.get("resolved_location", location)
                 err = meta.get("error", "")
                 if n:
-                    ai_msg = f"Found <b>{n}</b> {care_need.title()} facilities near <b>{loc.title()}</b>."
+                    ai_msg = (f"Found <b>{n}</b> {care_need.title()} {"facility" if n==1 else "facilities"} near <b>{loc.title()}</b>! "
+                              f"Say \"show only government\" or \"show only private\" to filter.")
                 elif err and "resolve" in err.lower():
-                    ai_msg = f"I couldn't find <b>{location.title()}</b> on the map — try a nearby bigger city?"
+                    ai_msg = f"Hmm, I couldn't find <b>{location.title()}</b> on the map. Try a nearby bigger city?"
                 else:
-                    ai_msg = (f"I searched up to <b>{radius} km</b> around <b>{loc.title()}</b> "
-                              f"but couldn't find any {care_need} facilities. Try a different city?")
+                    ai_msg = (f"I looked up to <b>{radius} km</b> around <b>{loc.title()}</b> "
+                              f"but didn't find {care_need} facilities. Want to try a nearby city?")
                 chat_history = chat_history + [(query, ai_msg)]
                 meta["chat_history"] = chat_history
                 search_q = f"{care_need} near {location}"
                 html = _render_page(results, shortlist, eff_filt, sort_val, search_q, radius, meta, [])
                 return html, results, meta, "", radius, []
             if location and not valid_care:
-                ai_msg = f"What specific condition or procedure do you need near <b>{location.title()}</b>? (e.g. dialysis, eye care, maternity)"
+                ai_msg = f"Sure! What kind of medical care do you need near <b>{location.title()}</b>? For example: dialysis, eye care, maternity, cardiology…"
             elif care_need and not location:
-                ai_msg = f"Which city or area are you looking for <b>{care_need}</b> near?"
+                ai_msg = f"Got it — <b>{care_need}</b>. Which city or area are you near?"
             else:
-                ai_msg = "Could you tell me the <b>type of care</b> you need and the <b>city</b>? e.g. <i>dialysis near Jaipur</i>"
+                ai_msg = "Happy to help! Just tell me what care you need and which city — e.g. <i>dialysis near Jaipur</i> or <i>eye care in Chennai</i>."
             chat_history = chat_history + [(query, ai_msg)]
             m = dict(cur_meta or {})
             m["chat_history"] = chat_history
@@ -1857,9 +1901,10 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 if not care_need:
                     care_need = (cur_meta or {}).get("care_need", "")
                 if not care_need or not location:
-                    missing = "type of care" if not care_need else "city or area"
-                    ai_msg = f"What <b>{missing}</b> are you looking for?" + (
-                        f" (e.g. dialysis, eye care, maternity)" if not care_need else "")
+                    if not care_need:
+                        ai_msg = f"What kind of medical care are you looking for near <b>{location.title()}</b>? (e.g. dialysis, eye care, maternity, cardiology)"
+                    else:
+                        ai_msg = f"Which city are you near? I'll look for <b>{care_need}</b> facilities there."
                     chat_history = chat_history + [(query, ai_msg)]
                     return _ret(cur_results or [], cur_meta or {}, filter_val, query, radius, cur_compare or [])
 
@@ -1869,19 +1914,19 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 err = meta.get("error", "")
                 if n:
                     ai_msg = (
-                        f"Found <b>{n}</b> {care_need.title()} facilities near <b>{loc.title()}</b>. "
-                        f"Use the filter chips to narrow by Government / Private, or tap ⊞ to compare."
+                        f"Found <b>{n}</b> {care_need.title()} {"facility" if n==1 else "facilities"} near <b>{loc.title()}</b>! "
+                        f"You can say \"show only government\" or \"show only private\" to filter, or ask about a different care."
                     )
                 elif err and "resolve" in err.lower():
                     ai_msg = (
-                        f"I couldn't find <b>{location.title()}</b> on the map — "
-                        f"could you try a nearby bigger city or district name?"
+                        f"Hmm, I couldn't find <b>{location.title()}</b> on the map. "
+                        f"Could you try a nearby bigger city or district name?"
                     )
                 else:
                     ai_msg = (
-                        f"I searched up to <b>{radius} km</b> around <b>{loc.title()}</b> "
-                        f"but couldn't find any {care_need} facilities there. "
-                        f"Would you like to try a different city, or look for a related specialty?"
+                        f"I looked up to <b>{radius} km</b> around <b>{loc.title()}</b> "
+                        f"but didn't find {care_need} facilities there. "
+                        f"Want to try a nearby bigger city, or a different type of care?"
                     )
                 chat_history = chat_history + [(query, ai_msg)]
                 meta["chat_history"] = chat_history
@@ -1893,8 +1938,8 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 org = (action.get("org_type", "") or "").lower()
                 new_filter = ("Government" if org in ("government", "govt", "public", "sarkari")
                               else "Private" if org == "private" else "All")
-                type_label = new_filter.lower() if new_filter != "All" else "all"
-                ai_msg = f"Showing <b>{type_label}</b> facilities now."
+                type_label = new_filter.lower() if new_filter != "All" else "all types of"
+                ai_msg = f"Sure! Filtering to <b>{type_label}</b> facilities now."
                 chat_history = chat_history + [(query, ai_msg)]
                 return _ret(cur_results or [], cur_meta or {}, new_filter,
                             (cur_meta or {}).get("query", query), radius, cur_compare or [])
