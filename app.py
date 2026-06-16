@@ -6,7 +6,7 @@ import gradio as gr
 import pandas as pd
 
 from src.config import COLUMNS
-from src.geo import build_city_centroids, build_pincode_centroids
+from src.geo import resolve_location
 from src.ranking import parse_combined_query
 from src.evidence import trust_label
 from src import agent as supervisor
@@ -97,17 +97,28 @@ def _load_silver():
     return df
 
 
-def _load_pincode():
+CENTROIDS_TABLE = "mediguide.referral_copilot.location_centroids"
+
+def _load_centroids():
     try:
-        cols, rows = _sdk_query(
-            f"SELECT district, division, region, state, latitude, longitude "
-            f"FROM {PINCODE_SILVER}",
-            wait="30s",
-        )
-        return pd.DataFrame(rows, columns=cols)
+        cols, rows = _sdk_query(f"SELECT level, name_key, lat, lon FROM {CENTROIDS_TABLE}")
+        # Build dict: name_key -> {lat, lon}  (finer level overwrites coarser)
+        level_order = {"state": 0, "region": 1, "division": 2, "district": 3, "city": 4}
+        df_c = pd.DataFrame(rows, columns=cols)
+        df_c["lat"] = pd.to_numeric(df_c["lat"], errors="coerce")
+        df_c["lon"] = pd.to_numeric(df_c["lon"], errors="coerce")
+        df_c = df_c.dropna(subset=["lat", "lon"])
+        df_c["_order"] = df_c["level"].map(level_order).fillna(0)
+        df_c = df_c.sort_values("_order")   # coarse first, fine last (overwrites)
+        result = {
+            row["name_key"]: {"lat": row["lat"], "lon": row["lon"]}
+            for _, row in df_c.iterrows()
+        }
+        print(f"[App] Loaded {len(result):,} location centroids")
+        return result
     except Exception as e:
-        print(f"[App] Pincode Silver unavailable: {e}")
-        return pd.DataFrame()
+        print(f"[App] Centroids table unavailable: {e}")
+        return {}
 
 
 # ---------------------------------------------------------------------------
@@ -117,17 +128,13 @@ def _load_pincode():
 _STARTUP_ERROR = None
 
 try:
-    df          = _load_silver()
-    _pincode_df = _load_pincode()
-
-    _facility_centroids = build_city_centroids(df, COLUMNS["city"], COLUMNS["latitude"], COLUMNS["longitude"])
-    _pincode_centroids  = build_pincode_centroids(_pincode_df)
-    centroids = {**_pincode_centroids, **_facility_centroids}
+    df        = _load_silver()
+    centroids = _load_centroids()
 
     feedback_store.load(_sdk_query)
 
     _total_facilities = len(df)
-    _total_cities     = df[COLUMNS["city"]].dropna().nunique()
+    _total_cities     = df[COLUMNS["city"]].dropna().nunique() if not df.empty else 0
     _total_locations  = len(centroids)
 
 except Exception as _e:

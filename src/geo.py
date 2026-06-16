@@ -1,4 +1,5 @@
 import math
+import pandas as pd
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -16,8 +17,10 @@ def build_city_centroids(df, city_col, lat_col, lon_col):
     Compute average lat/lon per city from the facilities dataset.
     Avoids external geocoding — every facility already has coordinates.
     """
-    work = df[[city_col, lat_col, lon_col]].dropna()
-    work = work.copy()
+    work = df[[city_col, lat_col, lon_col]].copy()
+    work[lat_col] = pd.to_numeric(work[lat_col], errors="coerce")
+    work[lon_col] = pd.to_numeric(work[lon_col], errors="coerce")
+    work = work.dropna(subset=[lat_col, lon_col])
     work["_key"] = work[city_col].astype(str).str.strip().str.lower()
     grouped = work.groupby("_key")[[lat_col, lon_col]].mean()
     return {
@@ -47,7 +50,10 @@ def build_pincode_centroids(pincode_df):
         cols = [level_col] + coord_cols
         if not all(c in pincode_df.columns for c in cols):
             continue
-        work = pincode_df[cols].dropna().copy()
+        work = pincode_df[cols].copy()
+        work["latitude"]  = pd.to_numeric(work["latitude"],  errors="coerce")
+        work["longitude"] = pd.to_numeric(work["longitude"], errors="coerce")
+        work = work.dropna(subset=coord_cols)
         work["_key"] = work[level_col].astype(str).str.strip().str.lower()
         grouped = work.groupby("_key")[coord_cols].mean()
         for name, row in grouped.iterrows():
