@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Suvidha - Healthcare Referrals</title>
+  <style>
+    /* --- Modern UI Reset & Configuration --- */
+    :root {
+      --bg-main: #f8fafc;
+      --border-color: #e2e8f0;
+      --text-main: #1e293b;
+      --text-muted: #64748b;
+      --brand-dark: #0f172a;
+      --brand-green: #10b981; /* Original healthcare green accent color */
+      
+      /* Component Theme Hex Codes */
+      --private-bg: #f0fdf4;
+      --private-text: #166534;
+      --private-badge: #dcfce7;
+      
+      --govt-bg: #f0f9ff;
+      --govt-text: #075985;
+      --govt-badge: #e0f2fe;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    body {
+      background-color: var(--bg-main);
+      color: var(--text-main);
+      padding: 24px;
+    }
+
+    /* --- App Header Architecture --- */
+    .AppHeader {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background-color: #ffffff;
+      padding: 16px 24px;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      margin-bottom: 24px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.01);
+    }
+
+    .BrandArea {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* Target wrapper for your original logo file asset */
+    .BrandLogoImage {
+      height: 40px;
+      width: auto;
+      object-fit: contain;
+    }
+
+    .BrandText {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .BrandText h1 {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      color: var(--brand-dark);
+      line-height: 1.1;
+    }
+
+    .BrandText p {
+      font-size: 11px;
+      color: var(--brand-green);
+      font-weight: 600;
+      margin-top: 2px;
+    }
+
+    /* Search Controls Container */
+    .SearchWidgetBar {
+      display: flex;
+      background: #f1f5f9;
+      padding: 4px 8px;
+      border-radius: 32px;
+      border: 1px solid var(--border-color);
+    }
+
+    .SearchParamColumn {
+      padding: 4px 20px;
+      border-right: 1px solid var(--border-color);
+    }
+
+    .SearchParamColumn:last-child {
+      border-right: none;
+    }
+
+    .SearchParamColumn label {
+      display: block;
+      font-size: 10px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      font-weight: 700;
+      letter-spacing: 0.5px;
+    }
+
+    .SearchParamColumn span {
+      font-size: 14px;
+      font-weight: 600;
+      color: #334155;
+    }
+
+    /* --- Strict Layout Work Grid --- */
+    .MainLayoutWorkspace {
+      display: flex;
+      width: 100%;
+      gap: 24px; /* Standardized uniform column gap spacing */
+      align-items: flex-start;
+    }
+
+    /* Left Column: Hospital Directories (Strict 65% Allocation) */
+    .HospitalListColumn {
+      flex: 0 0 65%;
+      max-width: 65%;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .ResultCounterText {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    /* Hospital Layout Component Template */
+    .HospitalCardUnit {
+      display: flex;
+      background-color: #ffffff;
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .SectorBadgeColumn {
+      width: 110px;
+      padding: 24px 12px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    /* Sector Theme Variations */
+    .HospitalCardUnit.PrivateSector .SectorBadgeColumn {
+      background-color: var(--private-bg);
+      border-right: 1px solid var(--border-color);
+      color: var(--private-text);
+    }
+
+    .HospitalCardUnit.GovernmentSector .SectorBadgeColumn {
+      background-color: var(--govt-bg);
+      border-right: 1px solid var(--border-color);
+      color: var(--govt-text);
+    }
+
+    .StatusIndicatorTag {
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 10px;
+      width: 100%;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+
+    .PrivateSector .StatusIndicatorTag.strong { background: var(--private-badge); color: var(--private-text); }
+    .PrivateSector .StatusIndicatorTag.partial { background: #fef3c7; color: #92400e; }
+    .GovernmentSector .StatusIndicatorTag.verify { background: #fee2e2; color: #991b1b; }
+
+    .CardCoreWorkspace {
+      flex: 1;
+      padding: 20px 24px;
+      position: relative;
+    }
+
+    .HospitalNameText {
+      font-size: 18px;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 4px;
+    }
+
+    .HospitalLocationText {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 16px;
+    }
+
+    .DistanceTagValue {
+      position: absolute;
+      top: 20px;
+      right: 24px;
+      font-size: 13px;
+      color: var(--text-main);
+      font-weight: 600;
+    }
+
+    .PillMetadataGroup {
+      display: flex;
+      gap: 8px;
+    }
+
+    .MetadataPillItem {
+      font-size: 12px;
+      font-weight: 500;
+      padding: 4px 12px;
+      border-radius: 6px;
+      background: #f1f5f9;
+      color: #475569;
+    }
+
+    /* Right Column: Sidebar Map & Shortlists (Strict 35% Allocation) */
+    .SidebarDataColumn {
+      flex: 0 0 35%;
+      max-width: 35%;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    /* FIXED EXTERNAL MAP PANEL FRAME COHESION BOUNDARY */
+    .MapOuterBorderContainer {
+      border: 1px solid var(--border-color); /* Matches the fine-grain card borders precisely */
+      border-radius: 12px;                  /* Syncs outer canvas edge curvature lines */
+      overflow: hidden;                      /* CRITICAL: Prevents interactive elements from breaking boundaries */
+      background-color: #ffffff;
+      height: 410px;                         /* Controls strict alignment height parity */
+      position: relative;
+    }
+
+    /* Mock Canvas grid lines styling layout rules */
+    .MapCanvasWrapper {
+      width: 100%;
+      height: 100%;
+      background-color: #f1f5f9;
+      background-image: radial-gradient(#cbd5e1 1.5px, transparent 1.5px);
+      background-size: 24px 24px;
+      position: relative;
+    }
+
+    .InteractivePinNode {
+      position: absolute;
+      background: #1e293b;
+      color: white;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.08);
+    }
+
+    /* Bounded Actions Shortlist Container Component */
+    .ShortlistWorkspacePanel {
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      background-color: #ffffff;
+      padding: 20px;
+    }
+
+    .ShortlistTitleBlock {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      color: var(--text-main);
+    }
+
+    .ShortlistItemRowCard {
+      font-size: 13px;
+      padding: 12px;
+      background: #f8fafc;
+      border-radius: 8px;
+      border-left: 4px solid #166534;
+    }
+
+    .ExportShortlistActionBtn {
+      width: 100%;
+      background-color: #14532d;
+      color: #ffffff;
+      border: none;
+      padding: 14px;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      margin-top: 16px;
+      transition: background-color 0.15s ease;
+      text-align: center;
+    }
+
+    .ExportShortlistActionBtn:hover {
+      background-color: #166534;
+    }
+  </style>
+</head>
+<body>
+
+  <header class="AppHeader">
+    <div class="BrandArea">
+      <div class="BrandText">
+        <h1>SUVIDHA</h1>
+        <p>Healthcare Referrals</p>
+      </div>
+    </div>
+
+    <div class="SearchWidgetBar">
+      <div class="SearchParamColumn">
+        <label>Where</label>
+        <span>Hyderabad</span>
+      </div>
+      <div class="SearchParamColumn">
+        <label>Care Need</label>
+        <span>Ophthalmology</span>
+      </div>
+      <div class="SearchParamColumn">
+        <label>Radius</label>
+        <span>50 km</span>
+      </div>
+    </div>
+
+    <div>
+      <span style="font-size: 14px; font-weight: 500; color: var(--text-muted);">🔒 1 Saved</span>
+    </div>
+  </header>
+
+  <main class="MainLayoutWorkspace">
+    
+    <section class="HospitalListColumn">
+      <div class="ResultCounterText">8 facilities for ophthalmology within 50 km of Hyderabad</div>
+
+      <div class="HospitalCardUnit PrivateSector">
+        <div class="SectorBadgeColumn">
+          <div>🏢<br>Private</div>
+          <div class="StatusIndicatorTag strong">✓ Strong</div>
+        </div>
+        <div class="CardCoreWorkspace">
+          <div class="DistanceTagValue">3.1 km</div>
+          <h2 class="HospitalNameText">Swarup Eye Centre</h2>
+          <p class="HospitalLocationText">Hyderabad, Telangana</p>
+          <div class="PillMetadataGroup">
+            <span class="MetadataPillItem">specialties</span>
+            <span class="MetadataPillItem">description</span>
+            <span class="MetadataPillItem">capability</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="HospitalCardUnit PrivateSector">
+        <div class="SectorBadgeColumn">
+          <div>🏢<br>Private</div>
+          <div class="StatusIndicatorTag partial"> ⚠ Partial</div>
+        </div>
+        <div class="CardCoreWorkspace">
+          <div class="DistanceTagValue">2.4 km</div>
+          <h2 class="HospitalNameText">Clear Vision Lasik and Laser Centre</h2>
+          <p class="HospitalLocationText">Hyderabad, Telangana</p>
+          <div class="PillMetadataGroup">
+            <span class="MetadataPillItem">specialties</span>
+            <span class="MetadataPillItem">description</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="HospitalCardUnit GovernmentSector">
+        <div class="SectorBadgeColumn">
+          <div>🏛️<br>Government</div>
+          <div class="StatusIndicatorTag verify">✕ Verify</div>
+        </div>
+        <div class="CardCoreWorkspace">
+          <div class="DistanceTagValue">5.8 km</div>
+          <h2 class="HospitalNameText">Sarojini Devi Eye Hospital</h2>
+          <p class="HospitalLocationText">Hyderabad, Telangana</p>
+          <div class="PillMetadataGroup">
+            <span class="MetadataPillItem">specialties</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="SidebarDataColumn">
+      
+      <div class="MapOuterBorderContainer">
+        <div class="MapCanvasWrapper">
+          <div class="InteractivePinNode" style="top: 25%; left: 40%;">Swarup Eye</div>
+          <div class="InteractivePinNode" style="top: 48%; left: 20%;">Clear Vision</div>
+          <div class="InteractivePinNode" style="top: 65%; left: 60%; background: #ef4444;">Sarojini Devi</div>
+        </div>
+      </div>
+
+      <div class="ShortlistWorkspacePanel">
+        <div class="ShortlistTitleBlock">
+          <span>📋 Shortlist</span>
+          <span style="color: var(--text-muted); font-size: 13px;">1 saved</span>
+        </div>
+        <div class="ShortlistItemRowCard">
+          <strong>Swarup Eye Centre</strong><br>
+          <span style="font-size: 11px; color: var(--text-muted);">3.1 km · Hyderabad · Verification Strong</span>
+        </div>
+        <button class="ExportShortlistActionBtn">Export Shortlist</button>
+      </div>
+
+    </aside>
+  </main>
+
+</body>
+</html>
