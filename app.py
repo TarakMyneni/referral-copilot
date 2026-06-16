@@ -42,15 +42,9 @@ def _sdk_query(statement, wait=None):
     wh_id = warehouses[0].id
     print(f"[SDK] Using warehouse: {warehouses[0].name} ({wh_id})")
 
-    import json
-    import urllib.request
-    from databricks.sdk.service.sql import Disposition, Format
-
     r = w.statement_execution.execute_statement(
         warehouse_id=wh_id,
         statement=statement,
-        disposition=Disposition.EXTERNAL_LINKS,
-        format=Format.JSON_ARRAY,
         row_limit=20000,
     )
 
@@ -70,10 +64,8 @@ def _sdk_query(statement, wait=None):
     rows = []
     chunk = r.result
     while chunk:
-        if chunk.external_links:
-            for link in chunk.external_links:
-                with urllib.request.urlopen(link.external_link) as resp:
-                    rows.extend(json.loads(resp.read()))
+        if chunk.data_array:
+            rows.extend(chunk.data_array)
         if chunk.next_chunk_index is None:
             break
         chunk = w.statement_execution.get_statement_result_chunk_n(
@@ -87,9 +79,19 @@ def _sdk_query(statement, wait=None):
 # Data loading
 # ---------------------------------------------------------------------------
 
+_TEXT_COLS = {"description", "capability", "procedure_text", "equipment", "source_urls"}
+_TEXT_LIMIT = 300   # chars — keeps total payload under 25 MB inline limit
+
 def _load_silver():
-    needed_sql = ", ".join(f"`{c}`" for c in _NEEDED if c)
-    cols, rows = _sdk_query(f"SELECT {needed_sql} FROM {SILVER_TABLE}")
+    parts = []
+    for c in sorted(_NEEDED):
+        if not c:
+            continue
+        if c in _TEXT_COLS:
+            parts.append(f"SUBSTRING(`{c}`, 1, {_TEXT_LIMIT}) AS `{c}`")
+        else:
+            parts.append(f"`{c}`")
+    cols, rows = _sdk_query(f"SELECT {', '.join(parts)} FROM {SILVER_TABLE}")
     df = pd.DataFrame(rows, columns=cols)
     print(f"[App] Loaded {len(df):,} facilities from {SILVER_TABLE}")
     return df
