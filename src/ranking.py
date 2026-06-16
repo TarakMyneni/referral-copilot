@@ -9,6 +9,45 @@ from .evidence import evaluate_evidence
 
 _SEPARATOR_WORDS = re.compile(r"\b(?:near|in|around|close to|nearby|at)\b", re.IGNORECASE)
 
+_LLM_PROMPT = """\
+Extract the medical care need and the Indian city or location from the user query.
+Return ONLY a JSON object with two keys: "care_need" and "location".
+If either is missing or unclear, return an empty string for that key.
+
+Examples:
+  "dialysis near Jaipur"           -> {{"care_need": "dialysis", "location": "Jaipur"}}
+  "I need heart surgery in Mumbai" -> {{"care_need": "heart surgery", "location": "Mumbai"}}
+  "hello wassup"                   -> {{"care_need": "", "location": ""}}
+
+Query: {query}
+"""
+
+
+def _llm_parse(text):
+    """Use Databricks Foundation Model API to extract care_need + location."""
+    import json
+    try:
+        from databricks.sdk import WorkspaceClient
+        w = WorkspaceClient()
+        response = w.serving_endpoints.query(
+            name="databricks-meta-llama-3-3-70b-instruct",
+            messages=[{"role": "user", "content": _LLM_PROMPT.format(query=text)}],
+            max_tokens=60,
+            temperature=0,
+        )
+        raw = response.choices[0].message.content.strip()
+        # Extract JSON even if wrapped in markdown code block
+        json_match = re.search(r"\{.*?\}", raw, re.DOTALL)
+        if json_match:
+            parsed = json.loads(json_match.group())
+            care_need = parsed.get("care_need", "").strip()
+            location  = parsed.get("location",  "").strip()
+            print(f"[LLM] Parsed '{text}' → care_need='{care_need}' location='{location}'")
+            return care_need, location
+    except Exception as e:
+        print(f"[LLM] Parse failed: {e}")
+    return text, ""
+
 
 def parse_combined_query(text, centroids):
     """
@@ -40,7 +79,8 @@ def parse_combined_query(text, centroids):
             need = _SEPARATOR_WORDS.sub("", remaining).strip()
             return (need or text), original_loc
 
-    return text, ""
+    # LLM fallback — ask Databricks Foundation Model to extract intent
+    return _llm_parse(text)
 
 
 def normalize_care_need(text):

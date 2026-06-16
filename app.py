@@ -124,8 +124,6 @@ def _load_centroids():
 # ---------------------------------------------------------------------------
 # Startup: load data in background so Gradio starts immediately
 # ---------------------------------------------------------------------------
-import threading
-
 df                = pd.DataFrame()
 centroids         = {}
 _total_facilities = 0
@@ -168,46 +166,40 @@ def _load_centroids_csv():
             for _, row in df_c.iterrows()}
 
 
+import threading
+
 def _background_load():
     global df, centroids, _total_facilities, _total_cities
     global _total_locations, _STARTUP_ERROR, _data_ready
     try:
-        # ── Facilities: SQL first, CSV fallback ───────────────────────────
-        try:
-            df = _load_facilities_sql()
-            print(f"[App] Facilities loaded from Delta ({len(df):,} rows)")
-        except Exception as e:
-            print(f"[App] SQL unavailable ({e}) — falling back to CSV")
+        if os.path.exists(_FACILITIES_CSV):
             df = _load_facilities_csv()
             print(f"[App] Facilities loaded from CSV ({len(df):,} rows)")
+        else:
+            df = _load_facilities_sql()
+            print(f"[App] Facilities loaded from Delta ({len(df):,} rows)")
 
-        # ── Centroids: SQL first, CSV fallback ────────────────────────────
-        try:
-            centroids = _load_centroids_sql()
-            print(f"[App] Centroids loaded from Delta ({len(centroids):,})")
-        except Exception as e:
-            print(f"[App] Centroids SQL unavailable ({e}) — falling back to CSV")
+        if os.path.exists(_CENTROIDS_CSV):
             centroids = _load_centroids_csv()
             print(f"[App] Centroids loaded from CSV ({len(centroids):,})")
+        else:
+            centroids = _load_centroids_sql()
+            print(f"[App] Centroids loaded from Delta ({len(centroids):,})")
 
-        # ── Feedback: optional, skip silently if unavailable ──────────────
         try:
             feedback_store.load(_sdk_query)
-            print("[App] Feedback boost scores loaded")
-        except Exception as e:
-            print(f"[App] Feedback skipped (no warehouse): {e}")
+        except Exception as _fe:
+            print(f"[App] Feedback skipped: {_fe}")
 
         _total_facilities = len(df)
         _total_cities     = df[COLUMNS["city"]].dropna().nunique() if not df.empty else 0
         _total_locations  = len(centroids)
         _data_ready       = True
         print(f"[App] Ready — {_total_facilities:,} facilities, {_total_locations:,} locations")
-
     except Exception as _e:
         import traceback
         _STARTUP_ERROR = f"{type(_e).__name__}: {_e}\n\n{traceback.format_exc()}"
-        print(f"[App] BACKGROUND LOAD FAILED:\n{_STARTUP_ERROR}")
-
+        print(f"[App] STARTUP FAILED:\n{_STARTUP_ERROR}")
 
 threading.Thread(target=_background_load, daemon=True).start()
 
