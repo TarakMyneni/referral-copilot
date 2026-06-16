@@ -1667,6 +1667,7 @@ body, .gradio-container { background: #F7FAF3 !important; }
 .gradio-container > .main { padding: 0 !important; max-width: 100% !important; }
 footer { display: none !important; }
 .gr-prose { padding: 0 !important; }
+b, strong { font-weight: 700 !important; }
 
 /* Hide bridge column and all bridge components.
    display:none keeps elements in DOM so querySelector still finds them and
@@ -1804,6 +1805,13 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         # LLM unavailable — fall back to direct parse and run search
         if response is None:
             care_need, location, org_type_hint = parse_combined_query(query, centroids)
+            # Fill gaps from the previous search so context carries over even without LLM
+            prev_loc  = (cur_meta or {}).get("resolved_location", "")
+            prev_need = (cur_meta or {}).get("care_need", "")
+            if not location and prev_loc:
+                location = prev_loc
+            if not care_need and prev_need:
+                care_need = prev_need
             valid_care = care_need and care_need.lower().strip() not in _GENERIC_CARE
             if valid_care and location:
                 results, meta, eff_filt, radius = _run_search(care_need, location, org_type_hint, radius, filter_val)
@@ -1843,6 +1851,11 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 # Reject generic care terms — they match too many facilities
                 if care_need.lower() in _GENERIC_CARE:
                     care_need = ""
+                # Fill gaps from previous search if LLM omitted them
+                if not location:
+                    location = (cur_meta or {}).get("resolved_location", "")
+                if not care_need:
+                    care_need = (cur_meta or {}).get("care_need", "")
                 if not care_need or not location:
                     missing = "type of care" if not care_need else "city or area"
                     ai_msg = f"What <b>{missing}</b> are you looking for?" + (
