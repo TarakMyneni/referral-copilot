@@ -48,7 +48,9 @@ CARE_NEED_SYNONYMS = {
     "emergency": [
         "emergency medicine", "emergency surgery", "emergency care",
         "emergency department", "emergency preparedness",
-        "trauma", "casualty", "accident",
+        "trauma", "casualty", "accident", "injury", "injured",
+        "urgent care", "critical", "unconscious", "bleeding",
+        "chest pain", "heart attack", "stroke",
     ],
     "cardiology": [
         "cardiology", "cardiac", "heart",
@@ -56,12 +58,24 @@ CARE_NEED_SYNONYMS = {
         "heart failure", "cath lab", "angioplasty", "bypass",
     ],
     "maternity": [
-        "gynecology and obstetrics", "gynecology", "obstetrics",
-        "neonatology", "perinatal",                      # "neonatologyPerinatalMedicine" expanded
+        # American spellings (camelCase expanded by Silver)
+        "gynecology and obstetrics", "gynecology", "obstetrics", "obstetric",
+        # British spellings — widely used in Indian hospitals
+        "gynaecology and obstetrics", "gynaecology", "gynaecological", "obstetrical",
+        # Common Indian abbreviations
+        "obg", "ob/g", "ob-g", "ob&g",
+        # Newborn / perinatal
+        "neonatology", "perinatal", "nicu", "sncu", "newborn care",
+        # Antenatal / postnatal (single and two-word forms)
         "maternal", "maternity",
-        "antenatal", "prenatal", "postnatal",
+        "antenatal", "ante natal", "prenatal", "pre natal",
+        "postnatal", "post natal", "postpartum", "post partum",
+        # Delivery & women's health
         "labour ward", "labor ward", "delivery room", "delivery suite",
-        "birthing", "caesarean", "cesarean",
+        "birthing", "caesarean", "cesarean", "midwifery",
+        "women's hospital", "women hospital", "mother and child",
+        "reproductive health", "family planning",
+        "fetal", "foetal",
     ],
     "oncology": [
         "oncology", "cancer",
@@ -71,9 +85,12 @@ CARE_NEED_SYNONYMS = {
     ],
     "orthopedics": [
         "orthopedic", "orthopaedic",                     # "orthopedicSurgery" expanded -> need substring
-        "bone", "fracture",
+        "bone", "fracture", "broken", "broken bone",
         "joint replacement", "joint reconstruction",
         "spine", "spinal",
+        "knee", "hip replacement", "back pain", "dislocation", "sprain",
+        "leg injury", "leg pain", "arm injury", "shoulder injury",
+        "musculoskeletal", "ligament", "tendon",
     ],
     "icu": [
         "critical care medicine", "critical care",
@@ -86,7 +103,9 @@ CARE_NEED_SYNONYMS = {
     ],
     "ophthalmology": [
         "ophthalmology", "eye", "cataract", "retina",
-        "glaucoma", "cornea",
+        "glaucoma", "cornea", "vision", "optical",
+        "eye pain", "eye infection", "eye injury", "blurred vision",
+        "foreign body eye", "optometry", "lasik",
     ],
     "pediatrics": [
         "pediatric", "paediatric",                       # "pediatricSurgery" expanded
@@ -111,5 +130,31 @@ CARE_NEED_SYNONYMS = {
     "psychiatry": [
         "psychiatry", "neuropsychiatry", "psychology", "mental health",
         "behavioral", "addiction", "rehabilitation",
+    ],
+    "general medicine": [
+        "general medicine", "internal medicine", "general practice",
+        "family medicine", "primary care", "outpatient",
+        "fever", "cold", "cough", "flu", "influenza",
+        "body ache", "body pain", "headache", "fatigue",
+        "vomiting", "nausea", "diarrhea", "loose motion",
+        "weakness", "rash", "allergy", "infection",
+        "diabetes", "hypertension", "blood pressure",
+        "thyroid", "anaemia", "anemia",
+    ],
+    "pulmonology": [
+        "pulmonology", "respiratory", "lung", "pulmonary",
+        "asthma", "bronchitis", "pneumonia", "copd",
+        "breathing difficulty", "shortness of breath", "cough blood",
+    ],
+    "gastroenterology": [
+        "gastroenterology", "gastro", "liver", "hepatology",
+        "stomach", "abdomen", "gut", "bowel", "digestive",
+        "ulcer", "jaundice", "hepatitis", "pancreatitis",
+        "endoscopy", "colonoscopy",
+    ],
+    "urology": [
+        "urology", "urinary", "kidney stone", "prostate",
+        "bladder", "ureter", "urethra", "uti",
+        "burning urination", "blood in urine",
     ],
 }

@@ -13,6 +13,54 @@ _ADMIN_SUFFIX = re.compile(
     re.IGNORECASE,
 )
 
+# In-process cache so repeated searches for the same city don't hit Nominatim twice.
+_nominatim_cache: dict = {}
+
+
+def _nominatim_lookup(raw_query: str, is_pin: bool = False):
+    """
+    Geocode via OSM Nominatim (free, no API key).
+    Returns (lat, lon) or None.
+    Results are cached in-process to avoid repeated network calls.
+    """
+    cache_key = (raw_query.lower(), is_pin)
+    if cache_key in _nominatim_cache:
+        return _nominatim_cache[cache_key]
+
+    result = None
+    try:
+        import requests
+        if is_pin:
+            params = {
+                "postalcode": raw_query,
+                "country":    "in",
+                "format":     "json",
+                "limit":      1,
+            }
+        else:
+            params = {
+                "q":            f"{raw_query}, India",
+                "format":       "json",
+                "limit":        1,
+                "countrycodes": "in",
+                "addressdetails": 0,
+            }
+        resp = requests.get(
+            "https://nominatim.openstreetmap.org/search",
+            params=params,
+            headers={"User-Agent": "Suvidha-Referral-Copilot/1.0"},
+            timeout=5,
+        )
+        data = resp.json()
+        if data:
+            result = (float(data[0]["lat"]), float(data[0]["lon"]))
+            print(f"[Geo] Nominatim: '{raw_query}' → {result}")
+    except Exception as exc:
+        print(f"[Geo] Nominatim failed for '{raw_query}': {exc}")
+
+    _nominatim_cache[cache_key] = result
+    return result
+
 
 def haversine_km(lat1, lon1, lat2, lon2):
     """Great-circle distance between two points in kilometers."""
@@ -25,8 +73,7 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 
 def build_postcode_centroids(df, postcode_col, lat_col, lon_col):
-    """Build lat/lon centroids keyed by 6-digit PIN code from the facilities dataset.
-    Uses the dataset itself — no external postcode directory needed."""
+    """Build lat/lon centroids keyed by 6-digit PIN code from the facilities dataset."""
     if postcode_col not in df.columns:
         return {}
     work = df[[postcode_col, lat_col, lon_col]].copy()
@@ -65,13 +112,6 @@ def build_pincode_centroids(pincode_df):
     """
     Build location centroids from the India Post pincode directory at every
     available administrative level: district, division, region.
-
-    All three levels are merged into a single dict keyed by lowercase name.
-    Priority when the same name appears at multiple levels: district wins over
-    division wins over region (most precise wins).
-
-    Facility city centroids (from build_city_centroids) should then override
-    these with:  centroids = {**pincode_centroids, **facility_centroids}
     """
     result = {}
     coord_cols = ["latitude", "longitude"]
@@ -100,57 +140,77 @@ def resolve_location(query_location, centroids):
     Return (lat, lon, matched_name, match_type).
     match_type: "exact" | "fuzzy" | "not_found"
 
-    Resolution order (each step also retried after stripping admin suffixes):
-      0. 6-digit PIN code exact match
-      1. Exact lowercase name match
-      2. Substring match either direction — catches "new delhi" ↔ "delhi"
-      3. Edit-distance fuzzy — catches typos like "kolekatta" → "kolkata"
+    Resolution order:
+      0. 6-digit PIN code — exact hit in facility centroids, else Nominatim postalcode
+      1. Exact lowercase name match in centroids
+      2. Substring match (city names only, both directions, min-length guard)
+      3. Admin-suffix stripped version of steps 1-2
+      4. Nominatim geocoding — proper geocoder, handles any Indian city/town/village
+      5. Edit-distance fuzzy (cutoff 0.82, last resort for typos)
     """
     raw = query_location.strip()
     key = raw.lower()
 
-    # 0. PIN code — 6-digit number, keyed directly in centroids
+    # --- 0. PIN code ---
     if re.fullmatch(r"\d{6}", key):
         if key in centroids:
             c = centroids[key]
             return c["lat"], c["lon"], key, "exact"
+        # Nominatim knows every Indian PIN code
+        coords = _nominatim_lookup(key, is_pin=True)
+        if coords:
+            return coords[0], coords[1], key, "exact"
         return None, None, None, "not_found"
 
+    # City names only (exclude PIN-code keys which are pure digits)
+    city_centroids = {k: v for k, v in centroids.items() if not k.isdigit()}
+
     def _lookup(k):
-        """Try exact → substring → fuzzy for a given key string."""
+        """Exact → guarded substring for a given lowercase key."""
         if not k:
-            return None
+            return None, None
 
         # exact
-        if k in centroids:
+        if k in city_centroids:
             return k, "exact"
 
-        # substring either direction
-        candidates = [c for c in centroids if k in c or c in k]
+        # substring — require the shorter string to cover ≥60 % of the longer one
+        # to prevent short centroid keys ("ab", "ali") from matching unrelated queries.
+        candidates = []
+        for c in city_centroids:
+            longer, shorter = (k, c) if len(k) >= len(c) else (c, k)
+            if len(shorter) >= 4 and shorter in longer and len(shorter) >= len(longer) * 0.6:
+                candidates.append(c)
         if candidates:
             return min(candidates, key=len), "fuzzy"
 
-        # edit-distance fuzzy
-        close = difflib.get_close_matches(k, centroids.keys(), n=1, cutoff=0.70)
-        if close:
-            print(f"[Geo] Fuzzy matched '{raw}' → '{close[0]}'")
-            return close[0], "fuzzy"
-
         return None, None
 
-    # 1-3. Try the full key as typed
+    # 1-2. Try full key
     matched, mtype = _lookup(key)
     if matched:
-        c = centroids[matched]
+        c = city_centroids[matched]
         return c["lat"], c["lon"], matched, mtype
 
-    # 4. Strip admin suffix and retry ("agra division" → "agra")
+    # 3. Strip admin suffix and retry
     stripped = _ADMIN_SUFFIX.sub("", key).strip()
     if stripped and stripped != key:
         matched, mtype = _lookup(stripped)
         if matched:
-            c = centroids[matched]
+            c = city_centroids[matched]
             print(f"[Geo] Suffix-stripped '{raw}' → '{matched}'")
             return c["lat"], c["lon"], matched, mtype
+
+    # 4. Nominatim — authoritative geocoder, handles cities not in the facility dataset
+    coords = _nominatim_lookup(raw)
+    if coords:
+        return coords[0], coords[1], raw.lower(), "fuzzy"
+
+    # 5. Edit-distance fuzzy — typo correction only, high cutoff to avoid wrong cities
+    close = difflib.get_close_matches(key, city_centroids.keys(), n=1, cutoff=0.82)
+    if close:
+        print(f"[Geo] Fuzzy matched '{raw}' → '{close[0]}'")
+        c = city_centroids[close[0]]
+        return c["lat"], c["lon"], close[0], "fuzzy"
 
     return None, None, None, "not_found"
