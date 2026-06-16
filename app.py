@@ -135,19 +135,74 @@ _STARTUP_ERROR    = None
 _data_ready       = False
 
 
+_DATA_DIR = os.path.join(_BASE, "data")
+_FACILITIES_CSV  = os.path.join(_DATA_DIR, "facilities_silver.csv")
+_CENTROIDS_CSV   = os.path.join(_DATA_DIR, "location_centroids.csv")
+
+
+def _load_facilities_sql():
+    return _load_silver()
+
+
+def _load_facilities_csv():
+    _df = pd.read_csv(_FACILITIES_CSV, dtype=str)
+    for col in (COLUMNS["latitude"], COLUMNS["longitude"]):
+        if col in _df.columns:
+            _df[col] = pd.to_numeric(_df[col], errors="coerce")
+    return _df
+
+
+def _load_centroids_sql():
+    return _load_centroids()
+
+
+def _load_centroids_csv():
+    df_c = pd.read_csv(_CENTROIDS_CSV, dtype=str)
+    df_c["lat"] = pd.to_numeric(df_c["lat"], errors="coerce")
+    df_c["lon"] = pd.to_numeric(df_c["lon"], errors="coerce")
+    df_c = df_c.dropna(subset=["lat", "lon"])
+    level_order = {"state": 0, "region": 1, "division": 2, "district": 3, "city": 4}
+    df_c["_order"] = df_c["level"].map(level_order).fillna(0)
+    df_c = df_c.sort_values("_order")
+    return {row["name_key"]: {"lat": row["lat"], "lon": row["lon"]}
+            for _, row in df_c.iterrows()}
+
+
 def _background_load():
     global df, centroids, _total_facilities, _total_cities
     global _total_locations, _STARTUP_ERROR, _data_ready
     try:
-        print("[App] Background load starting …")
-        df        = _load_silver()
-        centroids = _load_centroids()
-        feedback_store.load(_sdk_query)
+        # ── Facilities: SQL first, CSV fallback ───────────────────────────
+        try:
+            df = _load_facilities_sql()
+            print(f"[App] Facilities loaded from Delta ({len(df):,} rows)")
+        except Exception as e:
+            print(f"[App] SQL unavailable ({e}) — falling back to CSV")
+            df = _load_facilities_csv()
+            print(f"[App] Facilities loaded from CSV ({len(df):,} rows)")
+
+        # ── Centroids: SQL first, CSV fallback ────────────────────────────
+        try:
+            centroids = _load_centroids_sql()
+            print(f"[App] Centroids loaded from Delta ({len(centroids):,})")
+        except Exception as e:
+            print(f"[App] Centroids SQL unavailable ({e}) — falling back to CSV")
+            centroids = _load_centroids_csv()
+            print(f"[App] Centroids loaded from CSV ({len(centroids):,})")
+
+        # ── Feedback: optional, skip silently if unavailable ──────────────
+        try:
+            feedback_store.load(_sdk_query)
+            print("[App] Feedback boost scores loaded")
+        except Exception as e:
+            print(f"[App] Feedback skipped (no warehouse): {e}")
+
         _total_facilities = len(df)
         _total_cities     = df[COLUMNS["city"]].dropna().nunique() if not df.empty else 0
         _total_locations  = len(centroids)
         _data_ready       = True
         print(f"[App] Ready — {_total_facilities:,} facilities, {_total_locations:,} locations")
+
     except Exception as _e:
         import traceback
         _STARTUP_ERROR = f"{type(_e).__name__}: {_e}\n\n{traceback.format_exc()}"
