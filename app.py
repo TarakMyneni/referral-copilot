@@ -1862,7 +1862,8 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 loc = meta.get("resolved_location", location)
                 err = meta.get("error", "")
                 if n:
-                    ai_msg = (f"Found <b>{n}</b> {care_need.title()} {"facility" if n==1 else "facilities"} near <b>{loc.title()}</b>! "
+                    fac_word = "facility" if n == 1 else "facilities"
+                    ai_msg = (f"Found <b>{n}</b> {care_need.title()} {fac_word} near <b>{loc.title()}</b>! "
                               f"Say \"show only government\" or \"show only private\" to filter.")
                 elif err and "resolve" in err.lower():
                     ai_msg = f"Hmm, I couldn't find <b>{location.title()}</b> on the map. Try a nearby bigger city?"
@@ -1913,8 +1914,9 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 loc = meta.get("resolved_location", location)
                 err = meta.get("error", "")
                 if n:
+                    fac_word = "facility" if n == 1 else "facilities"
                     ai_msg = (
-                        f"Found <b>{n}</b> {care_need.title()} {"facility" if n==1 else "facilities"} near <b>{loc.title()}</b>! "
+                        f"Found <b>{n}</b> {care_need.title()} {fac_word} near <b>{loc.title()}</b>! "
                         f"You can say \"show only government\" or \"show only private\" to filter, or ask about a different care."
                     )
                 elif err and "resolve" in err.lower():
