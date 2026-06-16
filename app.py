@@ -29,7 +29,8 @@ _SESSION   = str(uuid.uuid4())   # per-deployment session ID for interaction log
 # Databricks SDK query helper
 # ---------------------------------------------------------------------------
 
-def _sdk_query(statement, wait="120s"):
+def _sdk_query(statement, wait=None):
+    import time
     from databricks.sdk import WorkspaceClient
     from databricks.sdk.service.sql import StatementState
 
@@ -37,18 +38,28 @@ def _sdk_query(statement, wait="120s"):
     warehouses = list(w.warehouses.list())
     print(f"[SDK] Found {len(warehouses)} warehouse(s): {[(wh.name, wh.id, wh.state) for wh in warehouses]}")
     if not warehouses:
-        raise RuntimeError("No SQL warehouse found — check warehouse permissions for the app service principal.")
+        raise RuntimeError("No SQL warehouse found.")
     wh_id = warehouses[0].id
     print(f"[SDK] Using warehouse: {warehouses[0].name} ({wh_id})")
 
+    # Submit async (no wait_timeout) then poll — avoids SDK timeout format issues
     r = w.statement_execution.execute_statement(
         warehouse_id=wh_id,
         statement=statement,
-        wait_timeout=wait,
         row_limit=20000,
     )
+
+    terminal = {StatementState.SUCCEEDED, StatementState.FAILED,
+                StatementState.CANCELED, StatementState.CLOSED}
+    for _ in range(120):
+        if r.status.state in terminal:
+            break
+        print(f"[SDK] state={r.status.state} — waiting …")
+        time.sleep(5)
+        r = w.statement_execution.get_statement(r.statement_id)
+
     if r.status.state != StatementState.SUCCEEDED:
-        raise RuntimeError(f"Query failed: {r.status.error}")
+        raise RuntimeError(f"Query failed ({r.status.state}): {r.status.error}")
 
     col_names = [c.name for c in r.manifest.schema.columns]
     rows = []
