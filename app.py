@@ -353,21 +353,18 @@ _LANGUAGES = {
     "Odia":       ("ଓଡ଼ିଆ",   "ଉ.ଦା: ଭୁବନେଶ୍ୱର ନିକଟ ଡାଏଲିସିସ"),
 }
 
-# Inline search action — reads vi-query / vi-radius / vi-lang, sets bridge, clicks search.
+# Inline search action — reads vi-query / vi-radius, sets bridge, clicks search.
+# Language is already in h-lang bridge (set by the language chip onclick directly).
 _JS_SEARCH_INLINE = (
     "(function(){"
     "var inp=document.getElementById('vi-query');"
     "var rinp=document.getElementById('vi-radius');"
-    "var linp=document.getElementById('vi-lang-val');"
     "var q=inp?inp.value:'';"
     "var r=rinp?rinp.value:'50';"
-    "var lang=linp?linp.value:'English';"
     "var ra=document.querySelector('#h-rad textarea,#h-rad input');"
     "var qa=document.querySelector('#h-query textarea,#h-query input');"
-    "var la=document.querySelector('#h-lang textarea,#h-lang input');"
     "if(ra){ra.value=r;ra.dispatchEvent(new Event('input',{bubbles:true}));}"
     "if(qa){qa.value=q;qa.dispatchEvent(new Event('input',{bubbles:true}));}"
-    "if(la){la.value=lang;la.dispatchEvent(new Event('input',{bubbles:true}));}"
     "setTimeout(function(){"
     "var b=document.querySelector('#h-search-btn button,button#h-search-btn');"
     "if(b)b.click();"
@@ -515,39 +512,36 @@ _GENERAL_CHECKLIST = [
 ]
 
 
-def _make_intake_data_url(facility, care_need):
-    """Build a data:text/html;base64 URL for the intake-coordinator page.
-    Base64 avoids %-encoding explosion, keeping the QR payload under ~500 chars."""
-    import base64
+def _make_intake_qr_text(facility, care_need):
+    """
+    Build a plain-text payload for the QR code.
+    Plain text works in ALL QR scanners and camera apps — iOS and Android
+    display it inline without opening a browser.  data:// URLs are blocked
+    by most phone cameras so we use text instead.
+    """
     items = CARE_CHECKLISTS.get(care_need, _GENERAL_CHECKLIST)
-    li    = "".join(f"<li>{it}" for it in items)   # omit </li> — valid HTML5
     dept  = (care_need or "General").title()
-    name  = facility.get("name", "")[:50]
-    html  = (
-        "<!DOCTYPE html><html><head>"
-        "<meta charset=utf-8>"
-        "<meta name=viewport content=width=device-width>"
-        "<style>"
-        "body{font:14px sans-serif;padding:10px;max-width:400px;margin:0 auto}"
-        "h3{color:#27500A;margin:0 0 4px}"
-        ".d{font-weight:700;font-size:16px;color:#27500A;"
-        "background:#EAF3DE;padding:6px 10px;border-radius:4px;margin:6px 0}"
-        "li{padding:4px 0;border-bottom:1px solid #eee}"
-        "</style></head><body>"
-        f"<h3>SUVIDHA Referral</h3>"
-        f"<small>{name}</small>"
-        f"<div class=d>{dept}</div>"
-        f"<b>Pre-admission requirements:</b><ul>{li}</ul>"
-        "</body></html>"
-    )
-    b64 = base64.b64encode(html.encode()).decode()
-    return f"data:text/html;charset=utf-8;base64,{b64}"
+    name  = facility.get("name", "Unknown")[:60]
+    lines = [
+        "── SUVIDHA INCOMING REFERRAL ──",
+        f"Facility : {name}",
+        f"Department: {dept}",
+        "",
+        "Pre-admission requirements:",
+    ]
+    for i, item in enumerate(items, 1):
+        lines.append(f"{i}. {item}")
+    lines.append("")
+    lines.append("Suvidha Healthcare Referral Copilot")
+    return "\n".join(lines)
 
 
 def _make_qr_svg(text, scale=3):
-    """Generate a QR code as an inline SVG string using segno (no Pillow needed).
-    micro=False forces a full QR (not micro-QR) to maximise data capacity.
-    Falls back to api.qrserver.com image tag when segno is not installed."""
+    """
+    Generate a QR code as an inline SVG using segno.
+    Falls back to api.qrserver.com if segno is not installed.
+    The payload should be plain text (≤400 chars) for best scannability.
+    """
     try:
         import segno, io
         qr  = segno.make(text, error="l", micro=False, boost_error=False)
@@ -555,18 +549,16 @@ def _make_qr_svg(text, scale=3):
         qr.save(buf, kind="svg", scale=scale, border=1,
                 linecolor=GRN_DK, svgclass=None)
         svg = buf.getvalue()
-        svg = svg.replace("<svg ", '<svg style="width:100%;max-width:180px;display:block;" ', 1)
+        svg = svg.replace("<svg ", '<svg style="width:100%;max-width:200px;display:block;" ', 1)
         return svg
     except Exception as exc:
         print(f"[QR] segno failed ({exc}), using api.qrserver.com fallback")
         import urllib.parse
-        # The text here is already a data:text/html;base64,... URL — mostly alphanumeric,
-        # so URL-encoding it adds minimal overhead and stays within QR capacity.
         encoded = urllib.parse.quote(text, safe="")
         return (
             f'<img src="https://api.qrserver.com/v1/create-qr-code/'
-            f'?data={encoded}&size=180x180&margin=2&ecc=L&color=27500A" '
-            f'width="180" height="180" '
+            f'?data={encoded}&size=200x200&margin=2&ecc=L&color=27500A" '
+            f'width="200" height="200" '
             f'style="display:block;border-radius:6px;border:1px solid {BORDER_G};" '
             f'alt="QR code" />'
         )
@@ -577,8 +569,8 @@ def _checklist_modal_html(facility, care_need):
     items  = CARE_CHECKLISTS.get(care_need, _GENERAL_CHECKLIST)
     dept   = (care_need or "General").title()
 
-    data_url = _make_intake_data_url(facility, care_need)
-    qr_svg   = _make_qr_svg(data_url)
+    qr_text = _make_intake_qr_text(facility, care_need)
+    qr_svg  = _make_qr_svg(qr_text)
 
     items_html = "".join(
         f'<div style="display:flex;align-items:flex-start;gap:10px;padding:7px 0;'
@@ -843,21 +835,23 @@ def _langbar_html(active_lang="English"):
     for code, (display, _placeholder) in _LANGUAGES.items():
         active  = code == active_lang
         bg      = GRN_MID  if active else "#fff"
-        clr     = GRN_PALE if active else GRN_MID
+        clr     = GRN_PALE if active else TXT_PRI
         bdr     = GRN_MID  if active else BORDER_G
         ph_esc  = _placeholder.replace("'", "\\'")
+        # Write directly to the h-lang Gradio bridge textbox so the value
+        # persists even when page_html re-renders (the bridge lives outside it).
         js = (
             f"(function(){{"
             f"document.querySelectorAll('.sv-lang-chip').forEach(function(c){{"
-            f"c.style.background='#fff';c.style.color='{GRN_MID}';"
+            f"c.style.background='#fff';c.style.color='{TXT_PRI}';"
             f"c.style.borderColor='{BORDER_G}';}});"
             f"this.style.background='{GRN_MID}';"
             f"this.style.color='{GRN_PALE}';"
             f"this.style.borderColor='{GRN_MID}';"
-            f"var lv=document.getElementById('vi-lang-val');"
-            f"if(lv)lv.value='{code}';"
             f"var qi=document.getElementById('vi-query');"
             f"if(qi)qi.placeholder='{ph_esc}';"
+            f"var la=document.querySelector('#h-lang textarea,#h-lang input');"
+            f"if(la){{la.value='{code}';la.dispatchEvent(new Event('input',{{bubbles:true}}));}}"
             f"}}).call(this);"
         )
         chips.append(
@@ -873,7 +867,6 @@ def _langbar_html(active_lang="English"):
         f'text-transform:uppercase;letter-spacing:0.4px;white-space:nowrap;'
         f'margin-right:2px;">Language:</span>'
         + "".join(chips)
-        + f'<input type="hidden" id="vi-lang-val" value="{active_lang}">'
         + f'</div>'
     )
 

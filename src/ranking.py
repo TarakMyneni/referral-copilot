@@ -9,6 +9,13 @@ from .evidence import evaluate_evidence
 
 _SEPARATOR_WORDS = re.compile(r"\b(?:near|in|around|close to|nearby|at)\b", re.IGNORECASE)
 
+# Databricks Foundation Model endpoint — swap here to try a different model.
+# Options (most powerful first):
+#   databricks-claude-3-7-sonnet          ← best for structured extraction + multilingual
+#   databricks-meta-llama-3-1-405b-instruct
+#   databricks-meta-llama-3-3-70b-instruct  (previous default)
+_LLM_MODEL = "databricks-claude-3-7-sonnet"
+
 _LLM_PROMPT = """\
 You are a medical query parser for an Indian healthcare referral app.
 
@@ -31,6 +38,10 @@ Examples:
 {{"query":"I have accident, my leg is broken, show me hospitals near Vijayawada"}} → {{"care_need":"orthopedics","location":"Vijayawada","org_type":""}}
 {{"query":"government hospitals Hyderabad eye care"}} → {{"care_need":"eye care","location":"Hyderabad","org_type":"government"}}
 {{"query":"something in my eye near Chennai"}} → {{"care_need":"eye care","location":"Chennai","org_type":""}}
+{{"query":"i have leg pain need to go urgent where to go near Bhilai"}} → {{"care_need":"orthopedics","location":"Bhilai","org_type":""}}
+{{"query":"where can i get dialysis in Nagpur"}} → {{"care_need":"dialysis","location":"Nagpur","org_type":""}}
+{{"query":"need urgent help near Raipur chest problem"}} → {{"care_need":"cardiology","location":"Raipur","org_type":""}}
+{{"query":"private hospital knee surgery Pune"}} → {{"care_need":"knee surgery","location":"Pune","org_type":"private"}}
 {{"query":"హైదరాబాద్ దగ్గర కంటి చికిత్స"}} → {{"care_need":"eye care","location":"Hyderabad","org_type":""}}
 {{"query":"जयपुर के पास डायलिसिस"}} → {{"care_need":"dialysis","location":"Jaipur","org_type":""}}
 
@@ -52,7 +63,7 @@ def _llm_parse(text, lang="English"):
             return "", "", ""
 
         resp = requests.post(
-            f"{host}/serving-endpoints/databricks-meta-llama-3-3-70b-instruct/invocations",
+            f"{host}/serving-endpoints/{_LLM_MODEL}/invocations",
             headers={"Authorization": f"Bearer {token}",
                      "Content-Type": "application/json"},
             json={
