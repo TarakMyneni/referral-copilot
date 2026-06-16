@@ -346,6 +346,7 @@ _JS_SEARCH_INLINE = (
     "var rinp=document.getElementById('vi-radius');"
     "var q=inp?inp.value:'';"
     "var r=rinp?rinp.value:'50';"
+    "if(inp)inp.value='';"  # clear immediately so user sees blank box right away
     "var ra=document.querySelector('#h-rad textarea,#h-rad input');"
     "var qa=document.querySelector('#h-query textarea,#h-query input');"
     "if(ra){ra.value=r;ra.dispatchEvent(new Event('input',{bubbles:true}));}"
@@ -557,26 +558,35 @@ def _make_qr_svg(text, scale=3):
 _CHAT_SYSTEM = """\
 You are Suvidha, a friendly Indian healthcare referral assistant helping people find the right hospital.
 
+CRITICAL: Always read the full conversation history. Location and care need mentioned in EARLIER messages carry over.
+
 Decision logic:
-1. If you have BOTH a specific Indian location (city / town / 6-digit PIN) AND a specific care need
-   (condition, specialty, procedure), respond with ONLY this JSON — nothing else:
+1. SEARCH — if you know BOTH (a) a specific Indian location AND (b) a specific medical care need
+   (from ANY message in the conversation, current or past), respond with ONLY this JSON:
    {"action":"search","care_need":"<english care need>","location":"<english city>","org_type":"<government|private|>"}
 
-2. If the user wants to filter the currently shown results by ownership type, respond with ONLY:
+2. FILTER — if the user wants to show only govt or private hospitals from the current results:
    {"action":"filter","org_type":"<government|private|all>"}
 
-3. Otherwise ask ONE short clarifying question (1-2 sentences). Be warm, concise, empathetic.
-   Always respond in English regardless of the user's language.
+3. ASK — if you are still missing EITHER the location OR the specific care need (after checking history),
+   ask ONE short clarifying question. Do not re-ask something already answered earlier.
 
-org_type: "government" if user says govt/sarkari/public, "private" if private, "" otherwise.
+IMPORTANT rules:
+- "hospitals near X" / "best hospitals near X" / "clinic near X" are NOT specific care needs — ask what condition/specialty.
+- "Hebbal Bangalore" or "Koramangala Hyderabad" etc. are neighborhoods — extract the main city (Bangalore / Hyderabad).
+- org_type: "government" for govt/sarkari/public/sarkar, "private" for private, "" otherwise.
+- Always respond in English.
 
 Examples:
-  "best hospitals near Pune"             → ask what kind of care they need
-  "I have chest pain"                    → ask which city/area they're near
-  "need dialysis somewhere"              → ask which city
-  "eye problem near Chennai"             → {"action":"search","care_need":"eye care","location":"Chennai","org_type":""}
-  "government hospitals for dialysis Jaipur" → {"action":"search","care_need":"dialysis","location":"Jaipur","org_type":"government"}
-  "show only government ones"            → {"action":"filter","org_type":"government"}
+  user: "maternity near Delhi"           → {"action":"search","care_need":"maternity","location":"Delhi","org_type":""}
+  user: "dialysis" (prev search was in Delhi) → {"action":"search","care_need":"dialysis","location":"Delhi","org_type":""}
+  user: "show only govt ones"            → {"action":"filter","org_type":"government"}
+  user: "eye problem near Chennai"       → {"action":"search","care_need":"eye care","location":"Chennai","org_type":""}
+  user: "govt hospitals for dialysis Jaipur" → {"action":"search","care_need":"dialysis","location":"Jaipur","org_type":"government"}
+  user: "hospitals near Pune"            → ask what specific condition/procedure they need
+  user: "Hebbal Bangalore"               → ask what kind of care near Bangalore
+  user: "I have chest pain"              → ask which city they're near
+  user: "need dialysis somewhere"        → ask which city
 """
 
 
@@ -870,7 +880,7 @@ _JS = """
 """
 
 
-def _topbar_html(query, radius, n_saved):
+def _topbar_html(query, radius, n_saved, in_chat=False):
     if _LOGO_B64:
         # Crop to just the heart: image is square, heart occupies top ~65%, centered horizontally.
         # object-position 50% 28% focuses the crop window on the heart symbol.
@@ -902,7 +912,7 @@ def _topbar_html(query, radius, n_saved):
                 justify-content:center;border-right:0.5px solid {BORDER};">
       <div style="font-size:9px;font-weight:600;color:{TXT_MUT};text-transform:uppercase;
                   letter-spacing:0.5px;line-height:1;">ASK SUVIDHA</div>
-      <input id="vi-query" value="" autofocus placeholder="{'Ask a follow-up…' if query else 'e.g. I need dialysis near Jaipur…'}"
+      <input id="vi-query" value="" autofocus placeholder="{'Ask a follow-up…' if in_chat else 'e.g. I need dialysis near Jaipur…'}"
         onkeydown="if(event.key==='Enter'){{{_JS_SEARCH_INLINE}}}"
         style="border:none;outline:none;background:transparent;font-size:13px;
                color:{TXT_PRI};width:100%;padding:0;margin-top:2px;font-family:inherit;">
@@ -1565,8 +1575,8 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
         right_map = _default_map_html()
 
     shortlist_panel = _shortlist_panel_html(shortlist)
-    topbar       = _topbar_html(query, radius or 50, n_saved)
     chat_history = (meta or {}).get("chat_history", [])
+    topbar       = _topbar_html(query, radius or 50, n_saved, in_chat=bool(chat_history))
     chat_thread  = _chat_thread_html(chat_history)
     # Hide suggestion pills once the user has started a conversation
     suggestions  = "" if chat_history else _suggestions_bar_html(query)
@@ -1784,13 +1794,18 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             html = _render_page(cur_results or [], shortlist, filter_val, sort_val, query, radius, m, [])
             return html, cur_results or [], m, "", radius, []
 
+        # Terms too generic to use as care_need — would match most/all hospitals
+        _GENERIC_CARE = {"hospital", "hospitals", "clinic", "clinics", "healthcare",
+                         "medical", "doctor", "doctors", "care", "health", "centre", "center"}
+
         # Ask the LLM
         response, is_action = _llm_chat(query, chat_history)
 
         # LLM unavailable — fall back to direct parse and run search
         if response is None:
             care_need, location, org_type_hint = parse_combined_query(query, centroids)
-            if care_need and location:
+            valid_care = care_need and care_need.lower().strip() not in _GENERIC_CARE
+            if valid_care and location:
                 results, meta, eff_filt, radius = _run_search(care_need, location, org_type_hint, radius, filter_val)
                 n = meta.get("total_matches", len(results))
                 loc = meta.get("resolved_location", location)
@@ -1801,7 +1816,12 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 search_q = f"{care_need} near {location}"
                 html = _render_page(results, shortlist, eff_filt, sort_val, search_q, radius, meta, [])
                 return html, results, meta, "", radius, []
-            ai_msg = "I'm having trouble connecting. Try a query like <b>dialysis near Jaipur</b>."
+            if location and not valid_care:
+                ai_msg = f"What specific condition or procedure do you need near <b>{location.title()}</b>? (e.g. dialysis, eye care, maternity)"
+            elif care_need and not location:
+                ai_msg = f"Which city or area are you looking for <b>{care_need}</b> near?"
+            else:
+                ai_msg = "Could you tell me the <b>type of care</b> you need and the <b>city</b>? e.g. <i>dialysis near Jaipur</i>"
             chat_history = chat_history + [(query, ai_msg)]
             m = dict(cur_meta or {})
             m["chat_history"] = chat_history
@@ -1814,9 +1834,13 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 care_need     = (action.get("care_need",  "") or "").strip()
                 location      = (action.get("location",   "") or "").strip()
                 org_type_hint = (action.get("org_type",   "") or "").strip().lower()
+                # Reject generic care terms — they match too many facilities
+                if care_need.lower() in _GENERIC_CARE:
+                    care_need = ""
                 if not care_need or not location:
-                    ai_msg = ("I need to know both the <b>type of care</b> and <b>city/area</b>. "
-                              "Could you share those?")
+                    missing = "type of care" if not care_need else "city or area"
+                    ai_msg = f"What <b>{missing}</b> are you looking for?" + (
+                        f" (e.g. dialysis, eye care, maternity)" if not care_need else "")
                     chat_history = chat_history + [(query, ai_msg)]
                     return _ret(cur_results or [], cur_meta or {}, filter_val, query, radius, cur_compare or [])
 
