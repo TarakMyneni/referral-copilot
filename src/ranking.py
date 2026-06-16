@@ -243,6 +243,8 @@ def search_facilities(df, location_query, care_need_query, centroids,
             "website":     str(row.get(COLUMNS.get("website",     "website"),     "") or ""),
             "org_type":    str(row.get(COLUMNS.get("org_type",    "organization_type"), "") or ""),
             "description": str(row.get(COLUMNS.get("description", "description"), "") or ""),
+            "num_doctors": str(row.get(COLUMNS.get("num_doctors", "num_doctors"), "") or ""),
+            "capacity":    str(row.get(COLUMNS.get("capacity",    "capacity"),    "") or ""),
         }
 
         if has_coords:

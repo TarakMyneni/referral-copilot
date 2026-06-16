@@ -650,11 +650,20 @@ def _compare_panel_html(compare_list):
         for c in compare_list
     )
 
+    def _num_val(c, key):
+        v = (c.get(key) or "").strip()
+        try:
+            return str(int(float(v))) if v else "&#8212;"
+        except (ValueError, TypeError):
+            return v or "&#8212;"
+
     rows = (
         _row("Type",        [("Government" if _is_govt(c) else "Private") for c in compare_list])
         + _row("Distance",  [f'{c.get("distance_km","&#8212;")} km' for c in compare_list])
         + _row("Trust",     [trust_label(c["evidence"]).split(" ", 1)[-1]
                              if c.get("evidence") else "&#8212;" for c in compare_list])
+        + _row("Doctors",   [_num_val(c, "num_doctors") for c in compare_list])
+        + _row("Capacity",  [_num_val(c, "capacity") for c in compare_list])
         + _row("Specialties", [_spec_val(c) for c in compare_list], highlight=False)
         + _row("Phone",     [(c.get("phone") or "&#8212;")[:22] for c in compare_list])
         + _row("City",      [f'{c.get("city","")}, {c.get("state","")}' for c in compare_list])
@@ -1053,7 +1062,7 @@ def _card_html(rank, r, shortlist, compare=None, search_lat=None, search_lon=Non
           {r['name']}{sem_pill}</div>
         <div style="font-size:11px;color:{TXT_MUT};margin-top:1px;">
           {_s(r.get('city'))}, {_s(r.get('state'))}</div>
-        {(lambda d: f'<div style="font-size:11px;color:{TXT_SEC};margin-top:3px;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">{d[:160]}{"…" if len(d)>160 else ""}</div>' if d else "")(r.get("description","").strip())}
+        {(lambda d: f'<div style="font-size:11px;color:{TXT_PRI};margin-top:3px;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">{d[:160]}{"…" if len(d)>160 else ""}</div>' if d else "")(r.get("description","").strip())}
       </div>
       <div style="font-size:11px;color:{TXT_SEC};white-space:nowrap;flex-shrink:0;
                   display:flex;align-items:center;gap:3px;">
@@ -1373,7 +1382,7 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             )
         else:
             results_body = (
-                f'<div style="color:{TXT_PRI};font-size:13px;padding:20px 0;">'
+                f'<div style="color:{TXT_PRI};font-size:14px;font-weight:500;padding:20px 0;">'
                 f'Select a suggestion above or type a query like '
                 f'<b>dialysis near Jaipur</b> to find facilities.</div>'
             )
