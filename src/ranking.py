@@ -196,9 +196,10 @@ def search_facilities(df, location_query, care_need_query, centroids,
             "match_score": ms,
             "evidence":    ev,
             "geo_source":  geo_src,
-            "phone":       str(row.get(COLUMNS.get("phone",    "phone"),    "") or ""),
-            "website":     str(row.get(COLUMNS.get("website",  "website"),  "") or ""),
-            "org_type":    str(row.get(COLUMNS.get("org_type", "organization_type"), "") or ""),
+            "phone":       str(row.get(COLUMNS.get("phone",       "phone"),       "") or ""),
+            "website":     str(row.get(COLUMNS.get("website",     "website"),     "") or ""),
+            "org_type":    str(row.get(COLUMNS.get("org_type",    "organization_type"), "") or ""),
+            "description": str(row.get(COLUMNS.get("description", "description"), "") or ""),
         }
 
         if has_coords:

@@ -528,7 +528,8 @@ def _make_intake_data_url(facility, care_need):
 
 def _make_qr_svg(text, scale=3):
     """Generate a QR code as an inline SVG string using segno (no Pillow needed).
-    micro=False forces a full QR (not micro-QR) to maximise data capacity."""
+    micro=False forces a full QR (not micro-QR) to maximise data capacity.
+    Falls back to api.qrserver.com image tag when segno is not installed."""
     try:
         import segno, io
         qr  = segno.make(text, error="l", micro=False, boost_error=False)
@@ -539,12 +540,15 @@ def _make_qr_svg(text, scale=3):
         svg = svg.replace("<svg ", '<svg style="width:100%;max-width:180px;display:block;" ', 1)
         return svg
     except Exception as exc:
-        print(f"[QR] {exc}")
+        print(f"[QR] segno failed ({exc}), using api.qrserver.com fallback")
+        import urllib.parse
+        encoded = urllib.parse.quote(text, safe="")
         return (
-            f'<div style="width:160px;height:160px;background:{GRN_PALE};'
-            f'border:1px solid {BORDER_G};border-radius:8px;'
-            f'display:flex;align-items:center;justify-content:center;'
-            f'font-size:10px;color:{TXT_MUT};text-align:center;padding:12px;">QR unavailable</div>'
+            f'<img src="https://api.qrserver.com/v1/create-qr-code/'
+            f'?data={encoded}&size=170x170&margin=4&ecc=L&color=27500A" '
+            f'width="170" height="170" '
+            f'style="display:block;border-radius:6px;border:1px solid {BORDER_G};" '
+            f'alt="QR code" />'
         )
 
 
@@ -1039,6 +1043,7 @@ def _card_html(rank, r, shortlist, compare=None, search_lat=None, search_lon=Non
           {r['name']}{sem_pill}</div>
         <div style="font-size:11px;color:{TXT_MUT};margin-top:1px;">
           {_s(r.get('city'))}, {_s(r.get('state'))}</div>
+        {(lambda d: f'<div style="font-size:11px;color:{TXT_SEC};margin-top:3px;line-height:1.4;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">{d[:160]}{"…" if len(d)>160 else ""}</div>' if d else "")(r.get("description","").strip())}
       </div>
       <div style="font-size:11px;color:{TXT_SEC};white-space:nowrap;flex-shrink:0;
                   display:flex;align-items:center;gap:3px;">
@@ -1293,21 +1298,24 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             )
         else:
             results_body = (
-                f'<div style="color:{TXT_MUT};font-size:13px;padding:20px 0;">'
-                f'Select a suggestion above or type a query to find facilities.</div>'
+                f'<div style="color:{TXT_PRI};font-size:13px;padding:20px 0;">'
+                f'Select a suggestion above or type a query like '
+                f'<b>dialysis near Jaipur</b> to find facilities.</div>'
             )
     elif "error" in meta:
         results_body = (
             f'<div style="background:#FFF8E1;border-left:3px solid #F9A825;'
             f'padding:12px 16px;border-radius:0 6px 6px 0;font-size:13px;color:{TXT_PRI};">'
-            f'⚠ {meta["error"]}</div>'
+            f'&#9888; {meta["error"]}</div>'
         )
     elif not filtered:
         results_body = (
-            f'<div style="color:{TXT_SEC};font-size:13px;padding:16px 0;">'
+            f'<div style="background:#FFF8E1;border-left:3px solid #F9A825;'
+            f'padding:12px 16px;border-radius:0 6px 6px 0;font-size:13px;color:{TXT_PRI};">'
             f'No {filter_val.lower()} facilities found for '
-            f'<b>{care_need}</b> within <b>{int(radius or 50)} km</b> of <b>{loc}</b>. '
-            f'Try "All" filter or a larger radius.</div>'
+            f'<b>{care_need}</b> within <b>{int(radius or 50)} km</b> of <b>{loc}</b>.'
+            f'<br>Try switching to <b>All</b> filter, increasing the radius, or '
+            f'checking the spelling.</div>'
         )
     else:
         n_loc   = meta.get("located_count", len(results))
