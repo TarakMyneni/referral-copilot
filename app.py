@@ -190,6 +190,14 @@ def _background_load():
 
 threading.Thread(target=_background_load, daemon=True).start()
 
+# Load logo once at startup and embed as base64 to avoid static-file serving issues
+_LOGO_B64 = ""
+try:
+    with open(os.path.join(_BASE, "logo.jpg"), "rb") as _f:
+        _LOGO_B64 = base64.b64encode(_f.read()).decode("ascii")
+except Exception:
+    pass
+
 # ---------------------------------------------------------------------------
 # HTML rendering helpers
 # ---------------------------------------------------------------------------
@@ -216,41 +224,49 @@ _BUILDING_ICON = (
 _JS = """
 <script>
 (function(){
+  if (window.__sv_bridge_loaded) return;
+  window.__sv_bridge_loaded = true;
+
   function _set(sel, val) {
     var el = document.querySelector(sel);
-    if(el){ el.value = val; el.dispatchEvent(new Event('input', {bubbles:true})); }
+    if (!el) return;
+    el.value = val;
+    el.dispatchEvent(new Event('input',   {bubbles: true}));
+    el.dispatchEvent(new Event('change',  {bubbles: true}));
   }
   function _click(sel) {
     var el = document.querySelector(sel);
-    if(el) el.click();
+    if (el) el.click();
   }
+
   window.sSearch = function() {
-    var q = (document.getElementById('vi-query')||{}).value  || '';
-    var r = (document.getElementById('vi-radius')||{}).value || '50';
+    var q = (document.getElementById('vi-query')  || {}).value || '';
+    var r = (document.getElementById('vi-radius') || {}).value || '50';
     _set('#h-query textarea, #h-query input', q);
-    _set('#h-rad   input[type=number], #h-rad input', r);
-    setTimeout(function(){ _click('#h-search button'); }, 120);
+    _set('#h-rad textarea, #h-rad input', r);
+    setTimeout(function(){ _click('#h-search button'); }, 200);
   };
   window.sFilter = function(v) {
     _set('#h-filter textarea, #h-filter input', v);
-    setTimeout(function(){ _click('#h-filter-btn button'); }, 120);
+    setTimeout(function(){ _click('#h-filter-btn button'); }, 200);
   };
   window.sSort = function(v) {
     _set('#h-sort textarea, #h-sort input', v);
-    setTimeout(function(){ _click('#h-sort-btn button'); }, 120);
+    setTimeout(function(){ _click('#h-sort-btn button'); }, 200);
   };
   window.sBm = function(id) {
     _set('#h-bm-id textarea, #h-bm-id input', id);
-    setTimeout(function(){ _click('#h-bm-btn button'); }, 120);
+    setTimeout(function(){ _click('#h-bm-btn button'); }, 200);
   };
   window.sRm = function(idx) {
     _set('#h-rm-idx textarea, #h-rm-idx input', String(idx));
-    setTimeout(function(){ _click('#h-rm-btn button'); }, 120);
+    setTimeout(function(){ _click('#h-rm-btn button'); }, 200);
   };
-  window.sClear  = function(){ setTimeout(function(){ _click('#h-clear button');  }, 120); };
-  window.sExport = function(){ setTimeout(function(){ _click('#h-export button'); }, 120); };
+  window.sClear  = function(){ setTimeout(function(){ _click('#h-clear button');  }, 200); };
+  window.sExport = function(){ setTimeout(function(){ _click('#h-export button'); }, 200); };
+
   document.addEventListener('keydown', function(e){
-    if(e.key==='Enter' && ['vi-query','vi-radius'].indexOf(e.target.id) >= 0)
+    if (e.key === 'Enter' && (e.target.id === 'vi-query' || e.target.id === 'vi-radius'))
       window.sSearch();
   });
 })();
@@ -259,13 +275,21 @@ _JS = """
 
 
 def _topbar_html(query, radius, n_saved):
-    logo = (
-        '<svg viewBox="0 0 40 40" width="38" height="38" xmlns="http://www.w3.org/2000/svg">'
-        '<rect width="40" height="40" rx="9" fill="#3B6D11"/>'
-        '<path d="M20 30 C20 30 9 21 9 14.5 A6.5 6.5 0 0 1 20 10 A6.5 6.5 0 0 1 31 14.5 C31 21 20 30 20 30Z" fill="white" opacity="0.9"/>'
-        '<circle cx="20" cy="14" r="3" fill="#3B6D11" opacity="0.6"/>'
-        '</svg>'
-    )
+    if _LOGO_B64:
+        # Crop to just the heart: image is square, heart occupies top ~65%, centered horizontally.
+        # object-position 50% 28% focuses the crop window on the heart symbol.
+        logo = (
+            f'<img src="data:image/jpeg;base64,{_LOGO_B64}" '
+            f'style="width:48px;height:48px;object-fit:cover;object-position:50% 28%;'
+            f'border-radius:6px;flex-shrink:0;">'
+        )
+    else:
+        logo = (
+            '<svg viewBox="0 0 40 40" width="40" height="40" xmlns="http://www.w3.org/2000/svg">'
+            '<rect width="40" height="40" rx="8" fill="#3B6D11"/>'
+            '<path d="M20 28C20 28 10 20 10 14a5 5 0 0 1 10-1 5 5 0 0 1 10 1c0 6-10 14-10 14z" fill="white"/>'
+            '</svg>'
+        )
     return f"""
 <div style="background:#fff;border-bottom:1px solid {BORDER};padding:10px 20px;
             display:flex;align-items:center;gap:16px;flex-shrink:0;
@@ -606,6 +630,44 @@ def _shortlist_panel_html(shortlist):
 </div>"""
 
 
+_EXAMPLES = [
+    "dialysis near Jaipur",
+    "eye care near Hyderabad",
+    "emergency surgery near Patna",
+    "cardiac care near Mumbai",
+    "maternity hospital near Delhi",
+    "cancer treatment near Bangalore",
+]
+
+def _examples_bar_html(current_query):
+    pills = ""
+    for ex in _EXAMPLES:
+        active = ex.lower() == (current_query or "").strip().lower()
+        bg  = GRN_MID  if active else "#FFFFFF"
+        clr = GRN_PALE if active else GRN_MID
+        bdr = GRN_MID  if active else BORDER_G
+        safe_ex = ex.replace("'", "\\'")
+        js  = (
+            f"document.getElementById('vi-query').value='{safe_ex}';"
+            f"window.sSearch();"
+        )
+        pills += (
+            f'<button onclick="{js}" '
+            f'style="background:{bg};color:{clr};border:0.5px solid {bdr};'
+            f'border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer;'
+            f'font-family:inherit;white-space:nowrap;flex-shrink:0;">'
+            f'{ex}</button>'
+        )
+    return (
+        f'<div style="background:#FAFCF7;border-bottom:1px solid {BORDER};'
+        f'padding:7px 20px;display:flex;align-items:center;gap:8px;'
+        f'flex-wrap:nowrap;overflow-x:auto;flex-shrink:0;">'
+        f'<span style="font-size:11px;color:{TXT_MUT};white-space:nowrap;'
+        f'flex-shrink:0;">Try:</span>'
+        f'{pills}</div>'
+    )
+
+
 def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=None):
     meta = meta or {}
     n_saved = len(shortlist)
@@ -669,14 +731,15 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
     if meta.get("search_lat"):
         right_map = _map_html(
             results, meta["search_lat"], meta["search_lon"],
-            int(radius or 50), meta.get("resolved_location", where),
+            int(radius or 50), meta.get("resolved_location", query or ""),
         )
     else:
         right_map = _empty_map_html()
 
     shortlist_panel = _shortlist_panel_html(shortlist)
-    topbar    = _topbar_html(query, radius or 50, n_saved)
-    filterbar = _filterbar_html(filter_val, sort_val, len(results))
+    topbar      = _topbar_html(query, radius or 50, n_saved)
+    examplesbar = _examples_bar_html(query)
+    filterbar   = _filterbar_html(filter_val, sort_val, len(results))
 
     responsive_css = f"""
 <style>
@@ -722,6 +785,7 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     min-height:85vh;">
   {topbar}
+  {examplesbar}
   {filterbar}
   <div class="sv-body">
     <div class="sv-results">{results_body}</div>
@@ -761,9 +825,28 @@ body, .gradio-container { background: #F7FAF3 !important; }
 .gradio-container > .main { padding: 0 !important; max-width: 100% !important; }
 footer { display: none !important; }
 .gr-prose { padding: 0 !important; }
+
+/* Bridge components: keep in DOM (so JS can find them) but off-screen / invisible */
+#h-query, #h-rad, #h-search, #h-filter, #h-filter-btn,
+#h-sort, #h-sort-btn, #h-bm-id, #h-bm-btn,
+#h-rm-idx, #h-rm-btn, #h-clear, #h-export {
+    position: fixed !important;
+    bottom: -300px !important;
+    left: 0 !important;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    z-index: -9999 !important;
+}
 """
 
 with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
+
+    # Static JS — rendered once at startup; defines all window.sSearch / sFilter / etc.
+    # Placed before page_html so functions are available before user interaction.
+    gr.HTML(_JS)
 
     # State
     results_state   = gr.State([])
@@ -777,26 +860,30 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     # Main visible output
     page_html = gr.HTML(_render_page([], [], "All", "Nearest first", "", 50))
 
-    # Hidden Gradio bridge components (JS writes to these, Python reads them)
-    h_query     = gr.Textbox(value="",    visible=False, elem_id="h-query")
-    h_rad       = gr.Number( value=50,    visible=False, elem_id="h-rad")
-    h_search    = gr.Button("s",          visible=False, elem_id="h-search")
-    h_filter    = gr.Textbox(value="All", visible=False, elem_id="h-filter")
-    h_filter_btn = gr.Button("f",         visible=False, elem_id="h-filter-btn")
-    h_sort      = gr.Textbox(value="Nearest first", visible=False, elem_id="h-sort")
-    h_sort_btn  = gr.Button("so",         visible=False, elem_id="h-sort-btn")
-    h_bm_id     = gr.Textbox(value="",   visible=False, elem_id="h-bm-id")
-    h_bm_btn    = gr.Button("bm",        visible=False, elem_id="h-bm-btn")
-    h_rm_idx    = gr.Textbox(value="",   visible=False, elem_id="h-rm-idx")
-    h_rm_btn    = gr.Button("rm",        visible=False, elem_id="h-rm-btn")
-    h_clear     = gr.Button("cl",        visible=False, elem_id="h-clear")
-    h_export    = gr.Button("ex",        visible=False, elem_id="h-export")
+    # Bridge components: NOT visible=False — that removes them from DOM in Svelte-based Gradio.
+    # Instead, CSS (above) positions them off-screen so JS can still find and trigger them.
+    h_query      = gr.Textbox(value="",              elem_id="h-query")
+    h_rad        = gr.Textbox(value="50",            elem_id="h-rad")
+    h_search     = gr.Button("s",                    elem_id="h-search")
+    h_filter     = gr.Textbox(value="All",           elem_id="h-filter")
+    h_filter_btn = gr.Button("f",                    elem_id="h-filter-btn")
+    h_sort       = gr.Textbox(value="Nearest first", elem_id="h-sort")
+    h_sort_btn   = gr.Button("so",                   elem_id="h-sort-btn")
+    h_bm_id      = gr.Textbox(value="",              elem_id="h-bm-id")
+    h_bm_btn     = gr.Button("bm",                   elem_id="h-bm-btn")
+    h_rm_idx     = gr.Textbox(value="",              elem_id="h-rm-idx")
+    h_rm_btn     = gr.Button("rm",                   elem_id="h-rm-btn")
+    h_clear      = gr.Button("cl",                   elem_id="h-clear")
+    h_export     = gr.Button("ex",                   elem_id="h-export")
 
     export_file = gr.File(label="Download shortlist", visible=False)
 
     # ── Search ────────────────────────────────────────────────────────────
     def _do_search(query, radius, shortlist, filter_val, sort_val):
-        radius = int(radius or 50)
+        try:
+            radius = int(float(radius or "50"))
+        except (ValueError, TypeError):
+            radius = 50
         query  = (query or "").strip()
         if not _data_ready:
             m = {"error": _STARTUP_ERROR or "Data still loading — please try again."}
