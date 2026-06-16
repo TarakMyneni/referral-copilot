@@ -10,7 +10,7 @@ import gradio as gr
 import pandas as pd
 
 from src.config import COLUMNS
-from src.geo import resolve_location
+from src.geo import resolve_location, build_postcode_centroids
 from src.ranking import parse_combined_query
 from src.evidence import evaluate_evidence, trust_label
 from src import agent as supervisor
@@ -192,6 +192,18 @@ def _background_load():
             feedback_store.load(_sdk_query)
         except Exception as fe:
             print(f"[App] Feedback skipped: {fe}")
+        # Enrich centroids with PIN codes derived from facilities coordinates.
+        # Uses the dataset itself — no external postcode directory needed.
+        try:
+            pin_c = build_postcode_centroids(
+                df,
+                COLUMNS.get("postcode", "postcode"),
+                COLUMNS["latitude"],
+                COLUMNS["longitude"],
+            )
+            centroids = {**centroids, **pin_c}
+        except Exception as _pe:
+            print(f"[App] PIN centroids skipped: {_pe}")
         _data_ready = True
         print(f"[App] Ready — {len(df):,} facilities, {len(centroids):,} locations")
     except Exception as _e:

@@ -1,6 +1,17 @@
 import difflib
 import math
+import re
+
 import pandas as pd
+
+# Admin-level words that users append but centroid keys omit:
+#   "agra division" → try "agra"; "jaipur district" → try "jaipur"
+_ADMIN_SUFFIX = re.compile(
+    r"\s+(?:division|district|tehsil|taluk|taluka|block|mandal|zone|"
+    r"sector|ward|area|region|circle|sub.?district|sub.?division|"
+    r"municipal corporation|nagar|nagar panchayat|gram panchayat)$",
+    re.IGNORECASE,
+)
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -11,6 +22,26 @@ def haversine_km(lat1, lon1, lat2, lon2):
     dlambda = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
     return 2 * R * math.asin(math.sqrt(a))
+
+
+def build_postcode_centroids(df, postcode_col, lat_col, lon_col):
+    """Build lat/lon centroids keyed by 6-digit PIN code from the facilities dataset.
+    Uses the dataset itself — no external postcode directory needed."""
+    if postcode_col not in df.columns:
+        return {}
+    work = df[[postcode_col, lat_col, lon_col]].copy()
+    work[lat_col] = pd.to_numeric(work[lat_col], errors="coerce")
+    work[lon_col] = pd.to_numeric(work[lon_col], errors="coerce")
+    work = work.dropna(subset=[lat_col, lon_col])
+    work["_key"] = work[postcode_col].astype(str).str.strip()
+    work = work[work["_key"].str.fullmatch(r"\d{6}")]
+    if work.empty:
+        return {}
+    grouped = work.groupby("_key")[[lat_col, lon_col]].mean()
+    result = {pin: {"lat": row[lat_col], "lon": row[lon_col]}
+              for pin, row in grouped.iterrows()}
+    print(f"[Geo] Built {len(result)} PIN code centroids")
+    return result
 
 
 def build_city_centroids(df, city_col, lat_col, lon_col):
@@ -69,32 +100,57 @@ def resolve_location(query_location, centroids):
     Return (lat, lon, matched_name, match_type).
     match_type: "exact" | "fuzzy" | "not_found"
 
-    Resolution order:
-      1. Exact lowercase match
-      2. Substring match (either direction) — catches "new delhi" ↔ "delhi"
-      3. Edit-distance fuzzy match (difflib) — catches typos like
-         "kolekatta" → "kolkata", "banglore" → "bangalore"
+    Resolution order (each step also retried after stripping admin suffixes):
+      0. 6-digit PIN code exact match
+      1. Exact lowercase name match
+      2. Substring match either direction — catches "new delhi" ↔ "delhi"
+      3. Edit-distance fuzzy — catches typos like "kolekatta" → "kolkata"
     """
-    key = query_location.strip().lower()
+    raw = query_location.strip()
+    key = raw.lower()
 
-    # 1. Exact
-    if key in centroids:
-        c = centroids[key]
-        return c["lat"], c["lon"], key, "exact"
+    # 0. PIN code — 6-digit number, keyed directly in centroids
+    if re.fullmatch(r"\d{6}", key):
+        if key in centroids:
+            c = centroids[key]
+            return c["lat"], c["lon"], key, "exact"
+        return None, None, None, "not_found"
 
-    # 2. Substring either direction
-    candidates = [c for c in centroids if key in c or c in key]
-    if candidates:
-        best = min(candidates, key=len)
-        c = centroids[best]
-        return c["lat"], c["lon"], best, "fuzzy"
+    def _lookup(k):
+        """Try exact → substring → fuzzy for a given key string."""
+        if not k:
+            return None
 
-    # 3. Edit-distance fuzzy — handles misspellings / phonetic variants
-    close = difflib.get_close_matches(key, centroids.keys(), n=1, cutoff=0.70)
-    if close:
-        best = close[0]
-        c = centroids[best]
-        print(f"[Geo] Fuzzy matched '{query_location}' → '{best}'")
-        return c["lat"], c["lon"], best, "fuzzy"
+        # exact
+        if k in centroids:
+            return k, "exact"
+
+        # substring either direction
+        candidates = [c for c in centroids if k in c or c in k]
+        if candidates:
+            return min(candidates, key=len), "fuzzy"
+
+        # edit-distance fuzzy
+        close = difflib.get_close_matches(k, centroids.keys(), n=1, cutoff=0.70)
+        if close:
+            print(f"[Geo] Fuzzy matched '{raw}' → '{close[0]}'")
+            return close[0], "fuzzy"
+
+        return None, None
+
+    # 1-3. Try the full key as typed
+    matched, mtype = _lookup(key)
+    if matched:
+        c = centroids[matched]
+        return c["lat"], c["lon"], matched, mtype
+
+    # 4. Strip admin suffix and retry ("agra division" → "agra")
+    stripped = _ADMIN_SUFFIX.sub("", key).strip()
+    if stripped and stripped != key:
+        matched, mtype = _lookup(stripped)
+        if matched:
+            c = centroids[matched]
+            print(f"[Geo] Suffix-stripped '{raw}' → '{matched}'")
+            return c["lat"], c["lon"], matched, mtype
 
     return None, None, None, "not_found"

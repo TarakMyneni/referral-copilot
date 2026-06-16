@@ -91,6 +91,14 @@ def parse_combined_query(text, centroids):
         if need and loc:
             return need, loc
 
+    # PIN code: 6-digit number anywhere in the query
+    pin_m = re.search(r'\b(\d{6})\b', text)
+    if pin_m:
+        pin = pin_m.group(1)
+        remaining = (text[:pin_m.start()] + text[pin_m.end():]).strip()
+        need = _SEPARATOR_WORDS.sub("", remaining).strip()
+        return (need or text), pin
+
     text_lower = text.lower()
     for city in sorted(centroids.keys(), key=len, reverse=True):
         if city and city in text_lower:
