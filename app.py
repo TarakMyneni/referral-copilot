@@ -2,6 +2,7 @@ import base64
 import csv
 import io
 import os
+import re
 import threading
 import uuid
 
@@ -338,18 +339,35 @@ _RESET_JS = (
     "if(b)b.click();}"
 )
 
-# Inline search action — reads from the visible vi-query / vi-radius inputs,
-# sets the hidden bridge textboxes, then clicks the hidden search button.
+# Supported UI languages — code → (display name, example placeholder)
+_LANGUAGES = {
+    "English":    ("English",    "e.g. dialysis near Jaipur"),
+    "Hindi":      ("हिंदी",      "जैसे: जयपुर के पास डायलिसिस"),
+    "Telugu":     ("తెలుగు",    "ఉదా: హైదరాబాద్ దగ్గర కంటి చికిత్స"),
+    "Tamil":      ("தமிழ்",     "எ.கா: சென்னை அருகே கண் மருத்துவம்"),
+    "Kannada":    ("ಕನ್ನಡ",    "ಉದಾ: ಬೆಂಗಳೂರು ಬಳಿ ಡಯಾಲಿಸಿಸ್"),
+    "Bengali":    ("বাংলা",     "যেমন: কলকাতার কাছে ডায়ালিসিস"),
+    "Marathi":    ("मराठी",     "उदा: मुंबईजवळ डायलिसिस"),
+    "Malayalam":  ("മലയാളം",  "ഉദാ: കൊച്ചിക്ക് സമീപം ഡയാലിസിസ്"),
+    "Gujarati":   ("ગુજરાતી",   "ઉ.દા: અમદાવાદ નજીક ડાયાલિસિસ"),
+    "Odia":       ("ଓଡ଼ିଆ",   "ଉ.ଦା: ଭୁବନେଶ୍ୱର ନିକଟ ଡାଏଲିସିସ"),
+}
+
+# Inline search action — reads vi-query / vi-radius / vi-lang, sets bridge, clicks search.
 _JS_SEARCH_INLINE = (
     "(function(){"
     "var inp=document.getElementById('vi-query');"
     "var rinp=document.getElementById('vi-radius');"
+    "var linp=document.getElementById('vi-lang-val');"
     "var q=inp?inp.value:'';"
     "var r=rinp?rinp.value:'50';"
+    "var lang=linp?linp.value:'English';"
     "var ra=document.querySelector('#h-rad textarea,#h-rad input');"
     "var qa=document.querySelector('#h-query textarea,#h-query input');"
+    "var la=document.querySelector('#h-lang textarea,#h-lang input');"
     "if(ra){ra.value=r;ra.dispatchEvent(new Event('input',{bubbles:true}));}"
     "if(qa){qa.value=q;qa.dispatchEvent(new Event('input',{bubbles:true}));}"
+    "if(la){la.value=lang;la.dispatchEvent(new Event('input',{bubbles:true}));}"
     "setTimeout(function(){"
     "var b=document.querySelector('#h-search-btn button,button#h-search-btn');"
     "if(b)b.click();"
@@ -498,32 +516,32 @@ _GENERAL_CHECKLIST = [
 
 
 def _make_intake_data_url(facility, care_need):
-    """Build a data: URL containing a compact intake-coordinator HTML page.
-    When the QR is scanned this page opens in the browser — no server needed.
-    Kept intentionally small (<1 KB) so the QR remains scannable."""
-    import urllib.parse
+    """Build a data:text/html;base64 URL for the intake-coordinator page.
+    Base64 avoids %-encoding explosion, keeping the QR payload under ~500 chars."""
+    import base64
     items = CARE_CHECKLISTS.get(care_need, _GENERAL_CHECKLIST)
-    li    = "".join(f"<li>{it}</li>" for it in items)
+    li    = "".join(f"<li>{it}" for it in items)   # omit </li> — valid HTML5
     dept  = (care_need or "General").title()
-    name  = facility.get("name", "")
+    name  = facility.get("name", "")[:50]
     html  = (
-        "<!DOCTYPE html><html><head><meta charset=utf-8>"
-        "<meta name=viewport content='width=device-width,initial-scale=1'>"
-        "<style>body{font:14px sans-serif;padding:12px;background:#F7FAF3;"
-        "max-width:420px;margin:0 auto}"
-        "h2{color:#27500A;font-size:16px;margin:0 0 4px}"
-        ".d{font-size:18px;font-weight:700;color:#27500A;background:#EAF3DE;"
-        "border:1px solid #C0DD97;border-radius:6px;padding:8px 12px;margin:8px 0}"
-        "li{padding:5px 0;border-bottom:1px solid #ddd}"
+        "<!DOCTYPE html><html><head>"
+        "<meta charset=utf-8>"
+        "<meta name=viewport content=width=device-width>"
+        "<style>"
+        "body{font:14px sans-serif;padding:10px;max-width:400px;margin:0 auto}"
+        "h3{color:#27500A;margin:0 0 4px}"
+        ".d{font-weight:700;font-size:16px;color:#27500A;"
+        "background:#EAF3DE;padding:6px 10px;border-radius:4px;margin:6px 0}"
+        "li{padding:4px 0;border-bottom:1px solid #eee}"
         "</style></head><body>"
-        f"<h2>SUVIDHA — Incoming Referral</h2>"
+        f"<h3>SUVIDHA Referral</h3>"
         f"<small>{name}</small>"
         f"<div class=d>{dept}</div>"
         f"<b>Pre-admission requirements:</b><ul>{li}</ul>"
-        "<small style=color:#888>Suvidha Healthcare Referral Copilot</small>"
         "</body></html>"
     )
-    return "data:text/html;charset=utf-8," + urllib.parse.quote(html, safe="")
+    b64 = base64.b64encode(html.encode()).decode()
+    return f"data:text/html;charset=utf-8;base64,{b64}"
 
 
 def _make_qr_svg(text, scale=3):
@@ -542,11 +560,13 @@ def _make_qr_svg(text, scale=3):
     except Exception as exc:
         print(f"[QR] segno failed ({exc}), using api.qrserver.com fallback")
         import urllib.parse
+        # The text here is already a data:text/html;base64,... URL — mostly alphanumeric,
+        # so URL-encoding it adds minimal overhead and stays within QR capacity.
         encoded = urllib.parse.quote(text, safe="")
         return (
             f'<img src="https://api.qrserver.com/v1/create-qr-code/'
-            f'?data={encoded}&size=170x170&margin=4&ecc=L&color=27500A" '
-            f'width="170" height="170" '
+            f'?data={encoded}&size=180x180&margin=2&ecc=L&color=27500A" '
+            f'width="180" height="180" '
             f'style="display:block;border-radius:6px;border:1px solid {BORDER_G};" '
             f'alt="QR code" />'
         )
@@ -815,6 +835,47 @@ def _topbar_html(query, radius, n_saved):
     🔖 {n_saved} saved
   </div>
 </div>"""
+
+
+def _langbar_html(active_lang="English"):
+    """Compact language-chip strip rendered above the filter bar."""
+    chips = []
+    for code, (display, _placeholder) in _LANGUAGES.items():
+        active  = code == active_lang
+        bg      = GRN_MID  if active else "#fff"
+        clr     = GRN_PALE if active else GRN_MID
+        bdr     = GRN_MID  if active else BORDER_G
+        ph_esc  = _placeholder.replace("'", "\\'")
+        js = (
+            f"(function(){{"
+            f"document.querySelectorAll('.sv-lang-chip').forEach(function(c){{"
+            f"c.style.background='#fff';c.style.color='{GRN_MID}';"
+            f"c.style.borderColor='{BORDER_G}';}});"
+            f"this.style.background='{GRN_MID}';"
+            f"this.style.color='{GRN_PALE}';"
+            f"this.style.borderColor='{GRN_MID}';"
+            f"var lv=document.getElementById('vi-lang-val');"
+            f"if(lv)lv.value='{code}';"
+            f"var qi=document.getElementById('vi-query');"
+            f"if(qi)qi.placeholder='{ph_esc}';"
+            f"}}).call(this);"
+        )
+        chips.append(
+            f'<button class="sv-lang-chip" onclick="{js}" '
+            f'style="background:{bg};color:{clr};border:0.5px solid {bdr};'
+            f'border-radius:16px;padding:3px 10px;font-size:11px;cursor:pointer;'
+            f'font-family:inherit;white-space:nowrap;">{display}</button>'
+        )
+    return (
+        f'<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;'
+        f'padding:6px 0 2px;">'
+        f'<span style="font-size:10px;color:{TXT_MUT};font-weight:600;'
+        f'text-transform:uppercase;letter-spacing:0.4px;white-space:nowrap;'
+        f'margin-right:2px;">Language:</span>'
+        + "".join(chips)
+        + f'<input type="hidden" id="vi-lang-val" value="{active_lang}">'
+        + f'</div>'
+    )
 
 
 def _filterbar_html(filter_val, sort_val, n_results):
@@ -1253,13 +1314,13 @@ def _suggestions_bar_html(current_query):
     for s in _SUGGESTIONS:
         active = s.lower() == (current_query or "").strip().lower()
         bg  = GRN_MID  if active else "#FFFFFF"
-        clr = GRN_PALE if active else GRN_MID
-        bdr = GRN_MID  if active else BORDER_G
+        clr = GRN_PALE if active else TXT_PRI
+        bdr = GRN_MID  if active else GRN_MID
         pills += (
             f'<button onclick="{_js_suggestion(s)}" '
-            f'style="background:{bg};color:{clr};border:0.5px solid {bdr};'
+            f'style="background:{bg};color:{clr};border:1px solid {bdr};'
             f'border-radius:20px;padding:4px 12px;font-size:12px;cursor:pointer;'
-            f'font-family:inherit;white-space:nowrap;flex-shrink:0;">{s}</button>'
+            f'font-family:inherit;white-space:nowrap;flex-shrink:0;font-weight:500;">{s}</button>'
         )
     return (
         f'<div style="background:#FAFCF7;border-bottom:1px solid {BORDER};'
@@ -1351,6 +1412,7 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
     shortlist_panel = _shortlist_panel_html(shortlist)
     topbar       = _topbar_html(query, radius or 50, n_saved)
     suggestions  = _suggestions_bar_html(query)
+    langbar      = _langbar_html(meta.get("lang", "English"))
     filterbar    = _filterbar_html(filter_val, sort_val, len(results))
 
     responsive_css = f"""
@@ -1398,6 +1460,7 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
     min-height:85vh;">
   {topbar}
   {suggestions}
+  {langbar}
   {filterbar}
   <div class="sv-body">
     <div class="sv-results">{results_body}</div>
@@ -1478,7 +1541,8 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
         h_query  = gr.Textbox(value="",              elem_id="h-query",  label="", elem_classes=_SHIDE)
         h_rad    = gr.Textbox(value="50",            elem_id="h-rad",    label="", elem_classes=_SHIDE)
         h_filter = gr.Textbox(value="All",           elem_id="h-filter", label="", elem_classes=_SHIDE)
-        h_sort   = gr.Textbox(value=_DEFAULT_SORT,    elem_id="h-sort",   label="", elem_classes=_SHIDE)
+        h_sort   = gr.Textbox(value=_DEFAULT_SORT,   elem_id="h-sort",   label="", elem_classes=_SHIDE)
+        h_lang   = gr.Textbox(value="English",       elem_id="h-lang",   label="", elem_classes=_SHIDE)
         h_bm_id  = gr.Textbox(value="",             elem_id="h-bm-id",  label="", elem_classes=_SHIDE)
         h_rm_idx = gr.Textbox(value="",             elem_id="h-rm-idx", label="", elem_classes=_SHIDE)
         # One trigger button per action — JS calls element.click() on these
@@ -1500,7 +1564,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     export_file = gr.File(label="Download shortlist", visible=False)
 
     # ── Search ────────────────────────────────────────────────────────────
-    def _do_search(query, radius, shortlist, filter_val, sort_val):
+    def _do_search(query, radius, shortlist, filter_val, sort_val, lang):
         try:
             radius = int(float(radius or "50"))
         except (ValueError, TypeError):
@@ -1515,7 +1579,8 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             return (_render_page([], shortlist, filter_val, sort_val, query, radius, m, []),
                     [], m, query, radius, [])
 
-        care_need, location = parse_combined_query(query, centroids)
+        lang = lang or "English"
+        care_need, location, org_type_hint = parse_combined_query(query, centroids, lang=lang)
         if not location:
             m = {"error": f"Couldn't find a location in '{query}'. Try 'dialysis near Jaipur'."}
             return (_render_page([], shortlist, filter_val, sort_val, query, radius, m, []),
@@ -1528,12 +1593,23 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             care_need_query=care_need, location_query=location,
             radius_km=radius,
         )
-        html = _render_page(results, shortlist, filter_val, sort_val, query, radius, meta, [])
+
+        # Use org_type extracted by the LLM; only overrides if the user
+        # hasn't explicitly clicked a filter chip.
+        effective_filter = filter_val
+        if filter_val == "All" and org_type_hint:
+            if org_type_hint in ("government", "govt", "public", "sarkari"):
+                effective_filter = "Government"
+            elif org_type_hint == "private":
+                effective_filter = "Private"
+
+        meta["lang"] = lang
+        html = _render_page(results, shortlist, effective_filter, sort_val, query, radius, meta, [])
         return html, results, meta, query, radius, []
 
     h_search_btn.click(
         _do_search,
-        [h_query, h_rad, shortlist_state, filter_state, sort_state],
+        [h_query, h_rad, shortlist_state, filter_state, sort_state, h_lang],
         [page_html, results_state, meta_state, query_state, radius_state, compare_state],
         api_name=_AN,
     )

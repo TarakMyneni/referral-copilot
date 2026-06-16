@@ -9,36 +9,47 @@ from .evidence import evaluate_evidence
 
 _SEPARATOR_WORDS = re.compile(r"\b(?:near|in|around|close to|nearby|at)\b", re.IGNORECASE)
 
-# Conversational preambles to strip before parsing ("show me X near Y" → "X near Y")
-_PREAMBLES = re.compile(
-    r"^(?:show\s+me|find\s+me|find|search\s+for|search|look\s+for|get\s+me|"
-    r"give\s+me|can\s+you\s+find|please\s+find|i\s+need|i\s+want|"
-    r"help\s+me\s+find|help\s+me|locate|discover|list|display)\s+",
-    re.IGNORECASE,
-)
-
 _LLM_PROMPT = """\
-Extract the medical care need and the Indian city or location from the user query.
-Return ONLY a JSON object with two keys: "care_need" and "location".
-If either is missing or unclear, return an empty string for that key.
+You are a medical query parser for an Indian healthcare referral app.
+
+The user's preferred language is {lang}. If the query is not in English, translate it to English first, then extract the fields.
+
+Extract three things from the user query:
+- care_need : the medical condition, symptom, or procedure in English (e.g. "eye care", "broken leg", "dialysis")
+- location  : the Indian city, town, district, or 6-digit PIN code in English
+- org_type  : "government" if they explicitly want a government/public hospital, "private" if they want private, "" otherwise
+
+Rules:
+- Translate symptoms to care needs: "leg broken" → "orthopedics", "something in my eye" → "eye care", "heart attack" → "cardiology"
+- Strip filler words from care_need: remove "hospital", "clinic", "show me", "find", "i have", "i need", "government", "private" etc.
+- Always return care_need and location in English regardless of input language.
+- If a value is absent or unclear return an empty string for that key.
+- Return ONLY a valid JSON object — no explanation, no markdown.
 
 Examples:
-  "dialysis near Jaipur"           -> {{"care_need": "dialysis", "location": "Jaipur"}}
-  "I need heart surgery in Mumbai" -> {{"care_need": "heart surgery", "location": "Mumbai"}}
-  "hello wassup"                   -> {{"care_need": "", "location": ""}}
+{{"query":"dialysis near Jaipur"}} → {{"care_need":"dialysis","location":"Jaipur","org_type":""}}
+{{"query":"I have accident, my leg is broken, show me hospitals near Vijayawada"}} → {{"care_need":"orthopedics","location":"Vijayawada","org_type":""}}
+{{"query":"government hospitals Hyderabad eye care"}} → {{"care_need":"eye care","location":"Hyderabad","org_type":"government"}}
+{{"query":"something in my eye near Chennai"}} → {{"care_need":"eye care","location":"Chennai","org_type":""}}
+{{"query":"హైదరాబాద్ దగ్గర కంటి చికిత్స"}} → {{"care_need":"eye care","location":"Hyderabad","org_type":""}}
+{{"query":"जयपुर के पास डायलिसिस"}} → {{"care_need":"dialysis","location":"Jaipur","org_type":""}}
 
 Query: {query}
 """
 
 
-def _llm_parse(text):
-    """Use Databricks Foundation Model API to extract care_need + location."""
+def _llm_parse(text, lang="English"):
+    """
+    Use Databricks Foundation Model to extract care_need, location, org_type.
+    Includes the user's selected language so the LLM knows to translate.
+    Returns (care_need, location, org_type).
+    """
     import json, os, requests
     try:
         host  = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
         token = os.environ.get("DATABRICKS_TOKEN", "")
         if not host or not token:
-            return text, ""
+            return "", "", ""
 
         resp = requests.post(
             f"{host}/serving-endpoints/databricks-meta-llama-3-3-70b-instruct/invocations",
@@ -46,8 +57,8 @@ def _llm_parse(text):
                      "Content-Type": "application/json"},
             json={
                 "messages": [{"role": "user",
-                              "content": _LLM_PROMPT.format(query=text)}],
-                "max_tokens": 60,
+                              "content": _LLM_PROMPT.format(query=text, lang=lang)}],
+                "max_tokens": 80,
                 "temperature": 0,
             },
             timeout=10,
@@ -55,75 +66,100 @@ def _llm_parse(text):
         raw = resp.json()["choices"][0]["message"]["content"].strip()
         json_match = re.search(r"\{.*?\}", raw, re.DOTALL)
         if json_match:
-            parsed    = json.loads(json_match.group())
-            care_need = parsed.get("care_need", "").strip()
-            location  = parsed.get("location",  "").strip()
-            print(f"[LLM] '{text}' → care_need='{care_need}' location='{location}'")
-            return care_need, location
-    except Exception as e:
-        print(f"[LLM] Parse failed: {e}")
-    return text, ""
+            parsed   = json.loads(json_match.group())
+            care     = parsed.get("care_need", "").strip()
+            location = parsed.get("location",  "").strip()
+            org      = parsed.get("org_type",  "").strip().lower()
+            print(f"[LLM] lang={lang} '{text}' → care='{care}' loc='{location}' org='{org}'")
+            return care, location, org
+    except Exception as exc:
+        print(f"[LLM] Parse failed: {exc}")
+    return "", "", ""
 
 
-def parse_combined_query(text, centroids):
+def _regex_fallback(text, centroids):
     """
-    Parse a free-text query like "dialysis near Jaipur" into (care_need, location).
-
-    Strategy:
-      1. Look for "<need> near/in/around/close to/at <location>".
-      2. Fall back to scanning for any city name the dataset actually knows about
-         (handles phrasings without a separator word, e.g. "Jaipur dialysis").
-
-    Returns ("", "") if nothing usable could be extracted.
+    Offline fallback when the LLM endpoint is unavailable.
+    Handles only simple structured patterns.
     """
-    text = text.strip()
-    if not text:
-        return "", ""
+    # PIN code
+    pin_m = re.search(r'\b(\d{6})\b', text)
+    if pin_m:
+        pin       = pin_m.group(1)
+        remaining = (text[:pin_m.start()] + text[pin_m.end():]).strip()
+        need      = _SEPARATOR_WORDS.sub("", remaining).strip()
+        return need or text, pin, ""
 
-    # Strip conversational preambles ("show me X near Y" → "X near Y")
-    text = _PREAMBLES.sub("", text).strip()
-    if not text:
-        return "", ""
+    # "X near/in/around Y" with a known city name
+    text_lower = text.lower()
+    city_keys  = [k for k in centroids if not k.isdigit() and len(k) >= 3]
+    for city in sorted(city_keys, key=len, reverse=True):
+        if city in text_lower:
+            idx          = text_lower.find(city)
+            original_loc = text[idx:idx + len(city)]
+            remaining    = (text[:idx] + text[idx + len(city):]).strip()
+            need         = _SEPARATOR_WORDS.sub("", remaining).strip()
+            return need or text, original_loc, ""
 
-    m = re.search(r"^(.*?)\s+(?:near|in|around|close to|nearby|at)\s+(.+)$", text, re.IGNORECASE)
+    # Plain separator pattern as last resort
+    m = re.search(r"^(.*?)\s+(?:near|in|around|close to|nearby|at)\s+(.+)$",
+                  text, re.IGNORECASE)
     if m:
         need, loc = m.group(1).strip(), m.group(2).strip()
         if need and loc:
-            return need, loc
+            return need, loc, ""
 
-    # PIN code: 6-digit number anywhere in the query
-    pin_m = re.search(r'\b(\d{6})\b', text)
-    if pin_m:
-        pin = pin_m.group(1)
-        remaining = (text[:pin_m.start()] + text[pin_m.end():]).strip()
-        need = _SEPARATOR_WORDS.sub("", remaining).strip()
-        return (need or text), pin
+    return text, "", ""
 
-    text_lower = text.lower()
-    for city in sorted(centroids.keys(), key=len, reverse=True):
-        if city and city in text_lower:
-            idx = text_lower.find(city)
-            original_loc = text[idx:idx + len(city)]
-            remaining = text[:idx] + text[idx + len(city):]
-            need = _SEPARATOR_WORDS.sub("", remaining).strip()
-            return (need or text), original_loc
 
-    # LLM fallback — ask Databricks Foundation Model to extract intent
-    return _llm_parse(text)
+def parse_combined_query(text, centroids, lang="English"):
+    """
+    Parse a free-text query into (care_need, location, org_type).
+
+    LLM is the primary parser — it handles any natural language, symptoms,
+    government/private intent, and regional Indian languages.
+    _regex_fallback is used only when the LLM endpoint is unreachable.
+    """
+    text = (text or "").strip()
+    if not text:
+        return "", "", ""
+
+    care_need, location, org_type = _llm_parse(text, lang=lang)
+    if care_need or location:
+        return care_need, location, org_type
+
+    # LLM unavailable — best-effort offline fallback
+    print("[LLM] Falling back to regex parser")
+    return _regex_fallback(text, centroids)
 
 
 def normalize_care_need(text):
     """
-    Map free-text care need to a canonical need name + list of search keywords.
-    Falls back to treating the raw input as a single keyword if unrecognized.
+    Map a care-need string to a canonical name + keyword list.
+    The LLM already returns clean care-need text, so this is mostly a
+    keyword-expansion step. Falls back to the raw text as a keyword if
+    no synonym group matches.
     """
     text_l = text.strip().lower()
+    if not text_l:
+        return "", []
+
+    # Direct key match
     if text_l in CARE_NEED_SYNONYMS:
         return text_l, CARE_NEED_SYNONYMS[text_l]
 
+    # Score every care need by how many of its keywords appear in the text.
+    # Best score wins — e.g. "broken leg" scores higher for orthopedics than emergency.
+    best_need, best_kws, best_score = None, None, 0
     for need, kws in CARE_NEED_SYNONYMS.items():
-        if any(kw in text_l or text_l in kw for kw in kws):
-            return need, kws
+        score = sum(1 for kw in kws if kw in text_l)
+        if score > best_score:
+            best_score = score
+            best_need  = need
+            best_kws   = kws
+
+    if best_need:
+        return best_need, best_kws
 
     return text_l, [text_l]
 
@@ -133,7 +169,7 @@ def match_score(row, keywords):
     keywords_lower = [k.lower() for k in keywords]
     score = 0
     for field in EVIDENCE_TEXT_FIELDS:
-        col = COLUMNS.get(field, field)
+        col  = COLUMNS.get(field, field)
         text = str(row.get(col, "")).lower()
         if text and any(kw in text for kw in keywords_lower):
             score += 1
@@ -145,8 +181,6 @@ def search_facilities(df, location_query, care_need_query, centroids,
     """
     Returns (results, meta).
     results: list of dicts, sorted best-first.
-      Records with resolvable coordinates are ranked by match_score desc, distance asc.
-      Records with geo_source=UNKNOWN but matching city/state are appended at the end.
     meta: dict with resolved location / care-need info, or an "error" key.
     """
     if not location_query.strip() or not care_need_query.strip():
@@ -170,8 +204,8 @@ def search_facilities(df, location_query, care_need_query, centroids,
     state_col      = COLUMNS["state"]
     loc_lower      = location_query.strip().lower()
 
-    located   = []   # records with usable coordinates, within radius
-    unlocated = []   # geo_source=UNKNOWN, city/state matches the query location
+    located   = []
+    unlocated = []
 
     for _, row in df.iterrows():
         ms = match_score(row, keywords)
@@ -188,7 +222,7 @@ def search_facilities(df, location_query, care_need_query, centroids,
         except (ValueError, TypeError):
             has_coords = False
 
-        ev = evaluate_evidence(row, keywords)
+        ev   = evaluate_evidence(row, keywords)
         base = {
             "name":        row.get(COLUMNS["name"], "Unknown"),
             "city":        row.get(city_col, ""),
@@ -208,8 +242,6 @@ def search_facilities(df, location_query, care_need_query, centroids,
                 continue
             located.append({**base, "distance_km": round(dist, 1), "lat": flat, "lon": flon})
         elif geo_src == "UNKNOWN":
-            # No coordinates could be resolved; include only if the facility's
-            # city or state matches the typed location (name-based fallback).
             fac_city  = str(row.get(city_col,  "") or "").lower()
             fac_state = str(row.get(state_col, "") or "").lower()
             if (fac_city and (fac_city in loc_lower or loc_lower in fac_city)) or \
