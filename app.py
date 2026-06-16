@@ -366,7 +366,7 @@ def _js_suggestion(q):
         f"var inp=document.getElementById('vi-query');if(inp)inp.value='{sq}';"
         f"var ra=document.querySelector('#h-rad textarea,#h-rad input');"
         f"var qa=document.querySelector('#h-query textarea,#h-query input');"
-        f"if(ra){{ra.value='50';ra.dispatchEvent(new Event('input',{{bubbles:true}}));}}"
+        f"if(ra){{ra.value='5';ra.dispatchEvent(new Event('input',{{bubbles:true}}));}}"
         f"if(qa){{qa.value='{sq}';"
         f"qa.dispatchEvent(new Event('input',{{bubbles:true}}));}}"
         f"setTimeout(function(){{"
@@ -841,7 +841,7 @@ _JS = """
 
   window.sSearch = function() {
     var q = (document.getElementById('vi-query')  || {}).value || '';
-    var r = (document.getElementById('vi-radius') || {}).value || '50';
+    var r = (document.getElementById('vi-radius') || {}).value || '5';
     _set('#h-rad textarea, #h-rad input', r);
     _set('#h-query textarea, #h-query input', q);
     setTimeout(function(){ _enter('#h-query textarea, #h-query input'); }, 80);
@@ -923,7 +923,7 @@ def _topbar_html(query, radius, n_saved, in_chat=False):
       <div style="font-size:9px;font-weight:600;color:{TXT_MUT};text-transform:uppercase;
                   letter-spacing:0.5px;line-height:1;">RADIUS</div>
       <div style="display:flex;align-items:center;gap:3px;margin-top:2px;">
-        <input id="vi-radius" type="number" min="10" max="500" step="10" value="{int(radius or 50)}"
+        <input id="vi-radius" type="number" min="5" max="500" step="5" value="{int(radius or 5)}"
           onkeydown="if(event.key==='Enter'){{{_JS_SEARCH_INLINE}}}"
           style="border:none;outline:none;background:transparent;font-size:13px;
                  color:{TXT_PRI};width:38px;padding:0;font-family:inherit;">
@@ -1527,7 +1527,7 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
             f'<div style="background:#FFF8E1;border-left:3px solid #F9A825;'
             f'padding:12px 16px;border-radius:0 6px 6px 0;font-size:13px;color:{TXT_PRI};">'
             f'No {filter_val.lower()} facilities found for '
-            f'<b>{care_need}</b> within <b>{int(radius or 50)} km</b> of <b>{loc}</b>.'
+            f'<b>{care_need}</b> within <b>{int(radius or 5)} km</b> of <b>{loc}</b>.'
             f'<br>Try switching to <b>All</b> filter, increasing the radius, or '
             f'checking the spelling.</div>'
         )
@@ -1546,14 +1546,14 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
                 f'padding:8px 14px;border-radius:0 6px 6px 0;font-size:12px;'
                 f'color:#0D47A1;margin-bottom:10px;">'
                 f'&#8505; No results within {int(expanded_from)} km — '
-                f'automatically expanded to <b>{int(radius or 50)} km</b>.</div>'
+                f'automatically expanded to <b>{int(radius or 5)} km</b>.</div>'
             )
         summary = (
             expand_banner +
             f'<div style="font-size:12px;color:{TXT_SEC};margin-bottom:12px;">'
             f'<b style="color:{TXT_PRI};">{n_loc}</b> facilities for '
             f'<b style="color:{TXT_PRI};">{care_need}</b> within '
-            f'<b style="color:{TXT_PRI};">{int(radius or 50)} km</b> of '
+            f'<b style="color:{TXT_PRI};">{int(radius or 5)} km</b> of '
             f'<b style="color:{TXT_PRI};">{loc}</b>{fuzzy}{unloc_s}</div>'
         )
         slat  = meta.get("search_lat")
@@ -1569,14 +1569,14 @@ def _render_page(results, shortlist, filter_val, sort_val, query, radius, meta=N
     if meta.get("search_lat"):
         right_map = _map_html(
             results, meta["search_lat"], meta["search_lon"],
-            int(radius or 50), meta.get("resolved_location", query or ""),
+            int(radius or 5), meta.get("resolved_location", query or ""),
         )
     else:
         right_map = _default_map_html()
 
     shortlist_panel = _shortlist_panel_html(shortlist)
     chat_history = (meta or {}).get("chat_history", [])
-    topbar       = _topbar_html(query, radius or 50, n_saved, in_chat=bool(chat_history))
+    topbar       = _topbar_html(query, radius or 5, n_saved, in_chat=bool(chat_history))
     chat_thread  = _chat_thread_html(chat_history)
     # Hide suggestion pills once the user has started a conversation
     suggestions  = "" if chat_history else _suggestions_bar_html(query)
@@ -1688,11 +1688,11 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
     filter_state    = gr.State("All")
     sort_state      = gr.State(_DEFAULT_SORT)
     query_state     = gr.State("")
-    radius_state    = gr.State(50)
+    radius_state    = gr.State(5)
     compare_state   = gr.State([])   # hospitals being compared
 
     # Main visible output
-    page_html = gr.HTML(_render_page([], [], "All", _DEFAULT_SORT, "", 50))
+    page_html = gr.HTML(_render_page([], [], "All", _DEFAULT_SORT, "", 5))
 
     # Checklist modal — position:fixed overlay, empty = hidden
     checklist_html = gr.HTML("")
@@ -1745,7 +1745,7 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             radius_km=radius,
         )
         if not results:
-            for bigger_r in [100, 200, 400]:
+            for bigger_r in [10, 25, 50, 100, 200]:
                 if bigger_r <= radius:
                     continue
                 results, meta = supervisor.run(
@@ -1767,9 +1767,9 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
 
     def _do_chat(query, radius, shortlist, filter_val, sort_val, cur_results, cur_meta, cur_compare):
         try:
-            radius = int(float(radius or "50"))
+            radius = int(float(radius or "5"))
         except (ValueError, TypeError):
-            radius = 50
+            radius = 5
         query = (query or "").strip()
 
         # Retrieve chat history stored in current meta
@@ -1807,10 +1807,16 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
             valid_care = care_need and care_need.lower().strip() not in _GENERIC_CARE
             if valid_care and location:
                 results, meta, eff_filt, radius = _run_search(care_need, location, org_type_hint, radius, filter_val)
-                n = meta.get("total_matches", len(results))
+                n   = meta.get("total_matches", len(results))
                 loc = meta.get("resolved_location", location)
-                ai_msg = (f"Found <b>{n}</b> {care_need.title()} facilities near <b>{loc.title()}</b>."
-                          if n else f"No {care_need} facilities found near {loc} within {radius} km.")
+                err = meta.get("error", "")
+                if n:
+                    ai_msg = f"Found <b>{n}</b> {care_need.title()} facilities near <b>{loc.title()}</b>."
+                elif err and "resolve" in err.lower():
+                    ai_msg = f"I couldn't find <b>{location.title()}</b> on the map — try a nearby bigger city?"
+                else:
+                    ai_msg = (f"I searched up to <b>{radius} km</b> around <b>{loc.title()}</b> "
+                              f"but couldn't find any {care_need} facilities. Try a different city?")
                 chat_history = chat_history + [(query, ai_msg)]
                 meta["chat_history"] = chat_history
                 search_q = f"{care_need} near {location}"
@@ -1847,15 +1853,22 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
                 results, meta, eff_filt, radius = _run_search(care_need, location, org_type_hint, radius, filter_val)
                 n   = meta.get("total_matches", len(results))
                 loc = meta.get("resolved_location", location)
+                err = meta.get("error", "")
                 if n:
                     ai_msg = (
                         f"Found <b>{n}</b> {care_need.title()} facilities near <b>{loc.title()}</b>. "
                         f"Use the filter chips to narrow by Government / Private, or tap ⊞ to compare."
                     )
+                elif err and "resolve" in err.lower():
+                    ai_msg = (
+                        f"I couldn't find <b>{location.title()}</b> on the map — "
+                        f"could you try a nearby bigger city or district name?"
+                    )
                 else:
                     ai_msg = (
-                        f"No {care_need} facilities found near {loc} within {radius} km. "
-                        f"Try a broader area or different care need."
+                        f"I searched up to <b>{radius} km</b> around <b>{loc.title()}</b> "
+                        f"but couldn't find any {care_need} facilities there. "
+                        f"Would you like to try a different city, or look for a related specialty?"
                     )
                 chat_history = chat_history + [(query, ai_msg)]
                 meta["chat_history"] = chat_history
@@ -1979,8 +1992,8 @@ with gr.Blocks(css=CSS, title="Suvidha — Healthcare Referrals") as demo:
 
     # ── Reset (logo / app-name click) ─────────────────────────────────────
     def _do_reset():
-        html = _render_page([], [], "All", _DEFAULT_SORT, "", 50, compare=[])
-        return html, [], [], {}, "All", _DEFAULT_SORT, "", 50, []
+        html = _render_page([], [], "All", _DEFAULT_SORT, "", 5, compare=[])
+        return html, [], [], {}, "All", _DEFAULT_SORT, "", 5, []
 
     h_reset_btn.click(
         _do_reset,
