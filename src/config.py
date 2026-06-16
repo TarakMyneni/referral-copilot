@@ -59,7 +59,9 @@ CARE_NEED_SYNONYMS = {
         "gynecology and obstetrics", "gynecology", "obstetrics",
         "neonatology", "perinatal",                      # "neonatologyPerinatalMedicine" expanded
         "maternal", "maternity",
-        "delivery", "labour", "labor", "antenatal", "prenatal",
+        "antenatal", "prenatal", "postnatal",
+        "labour ward", "labor ward", "delivery room", "delivery suite",
+        "birthing", "caesarean", "cesarean",
     ],
     "oncology": [
         "oncology", "cancer",

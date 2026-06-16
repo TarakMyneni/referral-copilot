@@ -34,6 +34,54 @@ FEEDBACK_CAP = 5      # caps influence of very-frequently-saved facilities
 SEM_FLOOR    = 0.25   # discard results with semantic score below this threshold
                       # (prevents very-low-relevance RAG hits from surfacing)
 
+# ---------------------------------------------------------------------------
+# Facility-type filtering
+# Labs/diagnostics mention "prenatal tests", "gynecology panel", etc. in their
+# capability/description, so keyword matching alone surfaces them for hospital
+# queries. We detect them by name and org_type and exclude from non-diagnostic
+# searches.
+# ---------------------------------------------------------------------------
+
+_LAB_NAME_WORDS = frozenset({
+    "lab", "labs", "laboratory", "laboratories",
+    "pathology", "diagnostics", "collection",
+})
+
+_LAB_ORG_SUBSTRINGS = (
+    "laboratory", "laboratories", "pathology",
+    "diagnostic center", "diagnostic centre",
+    "collection center", "collection centre",
+    "sample center", "sample centre",
+)
+
+# Care needs that legitimately expect diagnostic/imaging facilities
+_DIAGNOSTIC_NEEDS = frozenset({
+    "radiology", "pathology", "imaging", "diagnostic",
+    "lab", "laboratory", "blood test", "scan",
+})
+
+# Org-type keywords that confirm a real clinical facility (override name check)
+_CLINICAL_ORG_TYPES = (
+    "hospital", "clinic", "nursing home", "medical center",
+    "medical centre", "health center", "health centre", "dispensary",
+)
+
+
+def _is_lab_facility(name: str, org_type: str) -> bool:
+    """Return True when a facility is primarily a diagnostic lab / collection centre."""
+    org_lower = org_type.lower()
+    # If org_type explicitly says hospital/clinic, trust that over the name
+    if any(c in org_lower for c in _CLINICAL_ORG_TYPES):
+        return False
+    # Check name words
+    name_words = set(
+        name.lower().replace(",", " ").replace(".", " ").replace("-", " ").split()
+    )
+    if name_words & _LAB_NAME_WORDS:
+        return True
+    # Check org_type substrings
+    return any(s in org_lower for s in _LAB_ORG_SUBSTRINGS)
+
 
 def run(df: pd.DataFrame, centroids: dict,
         care_need_query: str, location_query: str,
@@ -98,6 +146,16 @@ def run(df: pd.DataFrame, centroids: dict,
 
         # Require at least one relevance signal; skip very low semantic hits
         if kw_score == 0 and sem_score < SEM_FLOOR:
+            continue
+
+        # Exclude diagnostic labs / collection centres from clinical queries.
+        # Labs match because they list tests for the same conditions (e.g.
+        # "prenatal screening" for a maternity search), but they are not
+        # treatment facilities. Skip them unless the user is explicitly
+        # asking for diagnostics/imaging/radiology.
+        facility_name = str(row.get(COLUMNS["name"], "") or "")
+        facility_org  = str(row.get(COLUMNS.get("org_type", "organization_type"), "") or "")
+        if need_key not in _DIAGNOSTIC_NEEDS and _is_lab_facility(facility_name, facility_org):
             continue
 
         blended = kw_score + SEMANTIC_W * sem_score + FEEDBACK_W * fb_score
