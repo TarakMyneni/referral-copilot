@@ -489,14 +489,34 @@ def _card_html(rank, r, shortlist):
     dist  = r.get("distance_km")
     dist_s = f"{dist} km" if dist is not None else "—"
 
-    # Evidence chips
-    chips = "".join(
-        f'<span style="background:{GRN_PALE};border:0.5px solid {BORDER_G};'
-        f'border-radius:12px;padding:2px 10px;font-size:11px;color:{GRN_DK};'
-        f'margin:2px 3px 2px 0;display:inline-block;">'
-        f'{FIELD_LABELS.get(m["field"], m["field"])}</span>'
-        for m in ev["matching"]
-    )
+    # Evidence chips — click to expand and see the actual field text
+    id_slug = "".join(c for c in str(fid)[:16] if c.isalnum()) or "f"
+    chips_html = ""
+    for m in ev["matching"]:
+        field = m["field"]
+        label = FIELD_LABELS.get(field, field)
+        raw   = m.get("text", "").strip()
+        snippet = (raw[:280] + "…") if len(raw) > 280 else raw
+        snippet = snippet.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        cid = f"ev-{id_slug}-{field}"
+        toggle_js = (
+            f"(function(){{"
+            f"var d=document.getElementById('{cid}');"
+            f"if(d)d.style.display=d.style.display==='block'?'none':'block';"
+            f"}})();"
+        )
+        chips_html += (
+            f'<span onclick="{toggle_js}" title="Click to expand {label}"'
+            f' style="background:{GRN_PALE};border:0.5px solid {BORDER_G};'
+            f'border-radius:12px;padding:2px 10px;font-size:11px;color:{GRN_DK};'
+            f'margin:2px 3px 2px 0;display:inline-block;cursor:pointer;'
+            f'user-select:none;">{label} ▾</span>'
+            f'<div id="{cid}" style="display:none;background:#F4FAF0;'
+            f'border:0.5px solid {BORDER_G};border-radius:6px;'
+            f'padding:6px 10px;font-size:11px;color:{TXT_SEC};'
+            f'margin:2px 0 5px 0;line-height:1.5;word-break:break-word;">'
+            f'{snippet or "—"}</div>'
+        )
 
     missing = ev.get("missing", [])
     miss_html = ""
@@ -559,12 +579,12 @@ def _card_html(rank, r, shortlist):
         )
 
     evidence_section = ""
-    if chips:
+    if chips_html:
         evidence_section += (
             f'<div style="margin-top:8px;">'
             f'<div style="font-size:9px;font-weight:600;color:{TXT_MUT};'
             f'text-transform:uppercase;letter-spacing:0.4px;margin-bottom:4px;">CONFIRMED IN</div>'
-            f'<div>{chips}</div>'
+            f'<div>{chips_html}</div>'
             f'</div>'
         )
     if missing or ev.get("suspicious"):

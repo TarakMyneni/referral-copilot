@@ -24,12 +24,13 @@ def evaluate_evidence(row, keywords):
     # --- Matching evidence ---
     matching = []
     for field in EVIDENCE_TEXT_FIELDS:
-        text = str(_get(row, field, "")).lower()
+        raw  = str(_get(row, field, ""))
+        text = raw.lower()
         if not text:
             continue
         for kw in keywords_lower:
             if kw in text:
-                matching.append({"field": field, "keyword": kw})
+                matching.append({"field": field, "keyword": kw, "text": raw.strip()})
                 break  # one hit per field is enough
 
     # --- Missing evidence ---
