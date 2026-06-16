@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.gradio/
+# Real dataset — too large for git; upload with Databricks Apps deploy or load from Unity Catalog
+data/facilities.csv
